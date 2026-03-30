@@ -54,7 +54,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -122,12 +121,13 @@ private fun MemorizeApp() {
     var hiddenWordCount by remember { mutableIntStateOf(0) }
     var selectedTab by remember { mutableStateOf(BottomTab.Review) }
     val verse = starterVerses[verseIndex]
-    val words = verse.text.split(" ")
     val dueCount = starterVerses.size - verseIndex
     val passCount = verseIndex
     val speakVerse = rememberVerseSpeaker()
     val progress by animateFloatAsState(
-        targetValue = if (words.isEmpty()) 0f else hiddenWordCount.toFloat() / words.size.toFloat(),
+        targetValue = verse.text.split(" ").let { words ->
+            if (words.isEmpty()) 0f else hiddenWordCount.toFloat() / words.size.toFloat()
+        },
         label = "memorizeProgress"
     )
 
@@ -159,7 +159,8 @@ private fun MemorizeApp() {
             )
             PlayPill(
                 onPlay = {
-                    hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(words.size)
+                    val totalWords = verse.text.split(" ").size
+                    hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
                     speakVerse(verse)
                 }
             )
@@ -174,7 +175,10 @@ private fun MemorizeApp() {
                 hiddenWordCount = hiddenWordCount,
                 progressPercent = (progress * 100).roundToInt(),
                 onSpeak = { speakVerse(verse) },
-                onHideMore = { hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(words.size) },
+                onHideMore = {
+                    val totalWords = verse.text.split(" ").size
+                    hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
+                },
                 onReveal = { hiddenWordCount = (hiddenWordCount - 2).coerceAtLeast(0) },
                 onNextVerse = {
                     verseIndex = (verseIndex + 1) % starterVerses.size
@@ -189,13 +193,6 @@ private fun MemorizeApp() {
                 color = MaterialTheme.colorScheme.onBackground
             )
             DropZone(text = "Hold and drag a due verse here")
-            PracticeSection(
-                words = words,
-                hiddenWordCount = hiddenWordCount,
-                prompt = verse.prompt,
-                onSpeakVerse = { speakVerse(verse) },
-                onReset = { hiddenWordCount = 0 }
-            )
             Spacer(modifier = Modifier.height(16.dp))
         }
     }
@@ -529,97 +526,6 @@ private fun DropZone(text: String) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-    }
-}
-
-@Composable
-private fun PracticeSection(
-    words: List<String>,
-    hiddenWordCount: Int,
-    prompt: String,
-    onSpeakVerse: () -> Unit,
-    onReset: () -> Unit
-) {
-    Card(
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.22f))
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Practice",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    SmallIconButton(
-                        icon = Icons.Filled.VolumeUp,
-                        label = stringResource(R.string.speak_verse),
-                        tint = MaterialTheme.colorScheme.primary,
-                        onClick = onSpeakVerse
-                    )
-                    SmallIconButton(
-                        icon = Icons.Filled.AutoGraph,
-                        label = stringResource(R.string.reset_progress),
-                        tint = MaterialTheme.colorScheme.onBackground,
-                        onClick = onReset
-                    )
-                }
-            }
-            Text(
-                text = prompt,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.secondary
-            )
-            WordGrid(
-                words = words,
-                hiddenWordCount = hiddenWordCount
-            )
-        }
-    }
-}
-
-@Composable
-private fun WordGrid(words: List<String>, hiddenWordCount: Int) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        val rows = words.chunked(4)
-        rows.forEachIndexed { rowIndex, row ->
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                row.forEachIndexed { wordIndex, word ->
-                    val absoluteIndex = rowIndex * 4 + wordIndex
-                    WordChip(word = word, hidden = absoluteIndex < hiddenWordCount)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun WordChip(word: String, hidden: Boolean) {
-    Box(
-        modifier = Modifier
-            .background(
-                color = if (hidden) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.36f),
-                shape = RoundedCornerShape(12.dp)
-            )
-            .padding(horizontal = 10.dp, vertical = 8.dp)
-    ) {
-        Text(
-            text = if (hidden) "_".repeat(word.filter { !it.isWhitespace() }.length.coerceAtLeast(1)) else word,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onBackground,
-            modifier = Modifier.alpha(if (hidden) 0.9f else 1f)
-        )
     }
 }
 
