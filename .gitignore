@@ -1,0 +1,19 @@
+# Gradle
+.gradle/
+build/
+*/build/
+
+# Local SDK config
+local.properties
+
+# IDE
+.idea/caches/
+.idea/deploymentTargetSelector.xml
+.idea/deviceManager.xml
+.idea/workspace.xml
+
+# OS
+.DS_Store
+
+# Logs
+*.log
