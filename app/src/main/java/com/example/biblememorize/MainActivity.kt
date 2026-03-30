@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -39,12 +40,20 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -93,6 +102,8 @@ private val starterVerses = listOf(
     )
 )
 
+private val bibleVersions = listOf("KJV", "NKJV", "개역한글", "中文", "Español", "日本語", "Deutsch")
+
 private enum class BottomTab(val label: String) {
     Review("Review"),
     Progress("Progress"),
@@ -120,10 +131,12 @@ private fun MemorizeApp() {
     var verseIndex by remember { mutableIntStateOf(0) }
     var hiddenWordCount by remember { mutableIntStateOf(0) }
     var selectedTab by remember { mutableStateOf(BottomTab.Review) }
+    var selectedBibleVersion by remember { mutableStateOf("NKJV") }
+    var speechRate by remember { mutableStateOf(0.9f) }
     val verse = starterVerses[verseIndex]
     val dueCount = starterVerses.size - verseIndex
     val passCount = verseIndex
-    val speakVerse = rememberVerseSpeaker()
+    val speakVerse = rememberVerseSpeaker(speechRate)
     val progress by animateFloatAsState(
         targetValue = verse.text.split(" ").let { words ->
             if (words.isEmpty()) 0f else hiddenWordCount.toFloat() / words.size.toFloat()
@@ -140,60 +153,147 @@ private fun MemorizeApp() {
             )
         }
     ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background)
-                .statusBarsPadding()
-                .padding(innerPadding)
-                .padding(horizontal = 20.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+        when (selectedTab) {
+            BottomTab.Review -> {
+                ReviewScreen(
+                    innerPadding = innerPadding,
+                    verse = verse,
+                    dueCount = dueCount,
+                    passCount = passCount,
+                    progressPercent = (progress * 100).roundToInt(),
+                    onPlay = {
+                        val totalWords = verse.text.split(" ").size
+                        hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
+                        speakVerse(verse)
+                    },
+                    onSpeak = { speakVerse(verse) },
+                    onHideMore = {
+                        val totalWords = verse.text.split(" ").size
+                        hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
+                    },
+                    onReveal = { hiddenWordCount = (hiddenWordCount - 2).coerceAtLeast(0) },
+                    onNextVerse = {
+                        verseIndex = (verseIndex + 1) % starterVerses.size
+                        hiddenWordCount = 0
+                    },
+                    hiddenWordCount = hiddenWordCount
+                )
+            }
+            BottomTab.Progress -> {
+                ProgressScreen(innerPadding = innerPadding)
+            }
+            BottomTab.Settings -> {
+                SettingsScreen(
+                    innerPadding = innerPadding,
+                    selectedBibleVersion = selectedBibleVersion,
+                    onVersionSelected = { selectedBibleVersion = it },
+                    speechRate = speechRate,
+                    onSpeechRateChange = { speechRate = it }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReviewScreen(
+    innerPadding: PaddingValues,
+    verse: Verse,
+    dueCount: Int,
+    passCount: Int,
+    progressPercent: Int,
+    hiddenWordCount: Int,
+    onPlay: () -> Unit,
+    onSpeak: () -> Unit,
+    onHideMore: () -> Unit,
+    onReveal: () -> Unit,
+    onNextVerse: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .statusBarsPadding()
+            .padding(innerPadding)
+            .padding(horizontal = 20.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        TopBar()
+        HeroTitle()
+        StatsRow(
+            dueCount = dueCount,
+            passCount = passCount,
+            progressPercent = progressPercent
+        )
+        PlayPill(onPlay = onPlay)
+        Text(
+            text = "Due Now",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        DueVerseCard(
+            verse = verse,
+            hiddenWordCount = hiddenWordCount,
+            progressPercent = progressPercent,
+            onSpeak = onSpeak,
+            onHideMore = onHideMore,
+            onReveal = onReveal,
+            onNextVerse = onNextVerse
+        )
+        DropZone(text = "Hold and drag an upcoming verse here")
+        Text(
+            text = "Upcoming",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        DropZone(text = "Hold and drag a due verse here")
+        Spacer(modifier = Modifier.height(16.dp))
+    }
+}
+
+@Composable
+private fun ProgressScreen(innerPadding: PaddingValues) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .statusBarsPadding()
+            .padding(innerPadding)
+            .padding(horizontal = 20.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(18.dp)
+    ) {
+        Spacer(modifier = Modifier.height(18.dp))
+        Text(
+            text = "Progress",
+            style = MaterialTheme.typography.displaySmall,
+            fontWeight = FontWeight.Black,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f))
         ) {
-            TopBar()
-            HeroTitle()
-            StatsRow(
-                dueCount = dueCount,
-                passCount = passCount,
-                progressPercent = (progress * 100).roundToInt()
-            )
-            PlayPill(
-                onPlay = {
-                    val totalWords = verse.text.split(" ").size
-                    hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
-                    speakVerse(verse)
-                }
-            )
-            Text(
-                text = "Due Now",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-            DueVerseCard(
-                verse = verse,
-                hiddenWordCount = hiddenWordCount,
-                progressPercent = (progress * 100).roundToInt(),
-                onSpeak = { speakVerse(verse) },
-                onHideMore = {
-                    val totalWords = verse.text.split(" ").size
-                    hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
-                },
-                onReveal = { hiddenWordCount = (hiddenWordCount - 2).coerceAtLeast(0) },
-                onNextVerse = {
-                    verseIndex = (verseIndex + 1) % starterVerses.size
-                    hiddenWordCount = 0
-                }
-            )
-            DropZone(text = "Hold and drag an upcoming verse here")
-            Text(
-                text = "Upcoming",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-            DropZone(text = "Hold and drag a due verse here")
-            Spacer(modifier = Modifier.height(16.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(22.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Progress screen is next.",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                Text(
+                    text = "Review and Settings are active now. Progress can be added next with charts and verse history.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }
@@ -218,6 +318,240 @@ private fun TopBar() {
                 tint = MaterialTheme.colorScheme.onBackground
             )
         }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun SettingsScreen(
+    innerPadding: PaddingValues,
+    selectedBibleVersion: String,
+    onVersionSelected: (String) -> Unit,
+    speechRate: Float,
+    onSpeechRateChange: (Float) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .statusBarsPadding()
+            .padding(innerPadding)
+            .padding(horizontal = 20.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(18.dp)
+    ) {
+        Spacer(modifier = Modifier.height(18.dp))
+        Text(
+            text = "Settings",
+            style = MaterialTheme.typography.displaySmall,
+            fontWeight = FontWeight.Black,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        Text(
+            text = "Bible",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Text(
+                    text = "Version",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                ExposedDropdownMenuBox(
+                    expanded = expanded,
+                    onExpandedChange = { expanded = !expanded }
+                ) {
+                    TextField(
+                        value = selectedBibleVersion,
+                        onValueChange = {},
+                        readOnly = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(),
+                        shape = RoundedCornerShape(22.dp),
+                        colors = ExposedDropdownMenuDefaults.textFieldColors(
+                            focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.18f),
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.18f),
+                            focusedTextColor = MaterialTheme.colorScheme.onBackground,
+                            unfocusedTextColor = MaterialTheme.colorScheme.onBackground,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            focusedTrailingIconColor = MaterialTheme.colorScheme.onBackground,
+                            unfocusedTrailingIconColor = MaterialTheme.colorScheme.onBackground
+                        ),
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
+                        }
+                    )
+                    DropdownMenu(
+                        expanded = expanded,
+                        onDismissRequest = { expanded = false },
+                        modifier = Modifier.background(
+                            MaterialTheme.colorScheme.surface,
+                            RoundedCornerShape(20.dp)
+                        )
+                    ) {
+                        bibleVersions.forEach { version ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = version,
+                                        color = MaterialTheme.colorScheme.onBackground
+                                    )
+                                },
+                                onClick = {
+                                    onVersionSelected(version)
+                                    expanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+                Text(
+                    text = "All verses in the app will use the selected Bible version.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Text(
+            text = "Speech Speed",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        SpeechSpeedCard(
+            speechRate = speechRate,
+            onSpeechRateChange = onSpeechRateChange
+        )
+    }
+}
+
+@Composable
+private fun SpeechSpeedCard(
+    speechRate: Float,
+    onSpeechRateChange: (Float) -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Speed",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                Text(
+                    text = "${speechRate.formatRate()}x",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SpeedAdjustButton(
+                    symbol = "-",
+                    onClick = {
+                        onSpeechRateChange((speechRate - 0.1f).coerceAtLeast(0.1f).snapToTenth())
+                    }
+                )
+                Slider(
+                    value = speechRate,
+                    onValueChange = { onSpeechRateChange(it.snapToTenth()) },
+                    valueRange = 0.1f..2.0f,
+                    steps = 18,
+                    modifier = Modifier.weight(1f),
+                    colors = SliderDefaults.colors(
+                        thumbColor = Color.White,
+                        activeTrackColor = MaterialTheme.colorScheme.primary,
+                        inactiveTrackColor = Color.White.copy(alpha = 0.16f)
+                    )
+                )
+                SpeedAdjustButton(
+                    symbol = "+",
+                    onClick = {
+                        onSpeechRateChange((speechRate + 0.1f).coerceAtMost(2.0f).snapToTenth())
+                    }
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "0.1x",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "1.0x",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "2.0x",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(Color.White.copy(alpha = 0.10f))
+            )
+            Text(
+                text = "1.0x is normal speed. Lower values speak more slowly, and higher values speak faster.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun SpeedAdjustButton(symbol: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(28.dp)
+            .background(Color.White, CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = symbol,
+            color = MaterialTheme.colorScheme.background,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier
+                .padding(bottom = if (symbol == "-") 2.dp else 0.dp)
+        )
     }
 }
 
@@ -575,7 +909,7 @@ private fun BottomNavBar(selectedTab: BottomTab, onSelect: (BottomTab) -> Unit) 
 }
 
 @Composable
-private fun rememberVerseSpeaker(): (Verse) -> Unit {
+private fun rememberVerseSpeaker(speechRate: Float): (Verse) -> Unit {
     val context = LocalContext.current
     var textToSpeech by remember { mutableStateOf<TextToSpeech?>(null) }
     var isReady by remember { mutableStateOf(false) }
@@ -598,7 +932,14 @@ private fun rememberVerseSpeaker(): (Verse) -> Unit {
         }
     }
 
-    return remember(textToSpeech, isReady) {
+    DisposableEffect(textToSpeech, speechRate, isReady) {
+        if (isReady) {
+            textToSpeech?.setSpeechRate(speechRate)
+        }
+        onDispose { }
+    }
+
+    return remember(textToSpeech, isReady, speechRate) {
         { verse: Verse ->
             if (isReady) {
                 textToSpeech?.speak(
@@ -611,6 +952,10 @@ private fun rememberVerseSpeaker(): (Verse) -> Unit {
         }
     }
 }
+
+private fun Float.snapToTenth(): Float = (this * 10f).roundToInt() / 10f
+
+private fun Float.formatRate(): String = String.format(Locale.US, "%.1f", this)
 
 @Preview(showBackground = true)
 @Composable
