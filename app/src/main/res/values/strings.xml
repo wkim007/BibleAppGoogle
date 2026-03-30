@@ -7,4 +7,10 @@
     <string name="reveal_words">Reveal words</string>
     <string name="next_verse">Next verse</string>
     <string name="reset_progress">Reset progress</string>
+    <string name="answer_peek">Answer</string>
+    <string name="repeat_mode">Repeat</string>
+    <string name="voice_check">Voice check</string>
+    <string name="stop_review">Stop review</string>
+    <string name="previous_verse">Previous verse</string>
+    <string name="start_voice_input">Speak the verse</string>
 </resources>

@@ -1,12 +1,20 @@
 package com.example.biblememorize
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,15 +32,20 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoGraph
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.KeyboardVoice
+import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.NavigateBefore
+import androidx.compose.material.icons.filled.NavigateNext
+import androidx.compose.material.icons.filled.NotInterested
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.VolumeUp
@@ -54,25 +67,36 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import com.example.biblememorize.ui.theme.BibleMemorizeTheme
 import java.util.Locale
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 data class Verse(
     val reference: String,
@@ -110,6 +134,20 @@ private enum class BottomTab(val label: String) {
     Settings("Settings")
 }
 
+private enum class RepeatMode(val badge: String) {
+    Off(""),
+    Once("1"),
+    Twice("2"),
+    Infinite("∞");
+
+    fun next(): RepeatMode = when (this) {
+        Off -> Once
+        Once -> Twice
+        Twice -> Infinite
+        Infinite -> Off
+    }
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -133,16 +171,66 @@ private fun MemorizeApp() {
     var selectedTab by remember { mutableStateOf(BottomTab.Review) }
     var selectedBibleVersion by remember { mutableStateOf("NKJV") }
     var speechRate by remember { mutableStateOf(0.9f) }
+    var isReviewing by remember { mutableStateOf(false) }
+    var showReviewAnswer by remember { mutableStateOf(false) }
+    var repeatMode by remember { mutableStateOf(RepeatMode.Off) }
+    var dueRepeatMode by remember { mutableStateOf(RepeatMode.Off) }
+    var recognizedText by remember { mutableStateOf("") }
+    var matchedIndices by remember { mutableStateOf(setOf<Int>()) }
+    var voiceLevel by remember { mutableStateOf(0f) }
     val verse = starterVerses[verseIndex]
+    val verseWords = remember(verse.reference) { verse.text.split(" ") }
+    val reviewHiddenIndices = remember(verse.reference) { buildReviewHiddenIndices(verseWords) }
     val dueCount = starterVerses.size - verseIndex
     val passCount = verseIndex
-    val speakVerse = rememberVerseSpeaker(speechRate)
-    val progress by animateFloatAsState(
-        targetValue = verse.text.split(" ").let { words ->
-            if (words.isEmpty()) 0f else hiddenWordCount.toFloat() / words.size.toFloat()
+    val reviewScope = rememberCoroutineScope()
+    val speaker = rememberVerseSpeaker(speechRate)
+    val voiceRecognizer = rememberVoiceRecognizer(
+        onResult = { spokenText ->
+            recognizedText = spokenText
+            matchedIndices = matchRecognizedWords(
+                verseWords = verseWords,
+                hiddenIndices = reviewHiddenIndices,
+                recognizedText = spokenText
+            )
         },
+        onError = {
+            recognizedText = it
+            voiceLevel = 0f
+        },
+        onListeningStateChanged = { listening ->
+            if (listening && recognizedText.isBlank()) {
+                recognizedText = "Listening..."
+            }
+        },
+        onLevelChanged = { voiceLevel = it }
+    )
+    val progress by animateFloatAsState(
+        targetValue = if (verseWords.isEmpty()) 0f else hiddenWordCount.toFloat() / verseWords.size.toFloat(),
         label = "memorizeProgress"
     )
+    val context = LocalContext.current
+    val microphonePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            voiceRecognizer.startListening()
+        } else {
+            recognizedText = "Microphone permission is required."
+        }
+    }
+
+    LaunchedEffect(verseIndex, isReviewing) {
+        showReviewAnswer = false
+        recognizedText = ""
+        matchedIndices = emptySet()
+        voiceLevel = 0f
+        if (!isReviewing) {
+            repeatMode = RepeatMode.Off
+            speaker.stop()
+            voiceRecognizer.stopListening()
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -162,21 +250,70 @@ private fun MemorizeApp() {
                     passCount = passCount,
                     progressPercent = (progress * 100).roundToInt(),
                     onPlay = {
-                        val totalWords = verse.text.split(" ").size
+                        val totalWords = verseWords.size
                         hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
-                        speakVerse(verse)
+                        isReviewing = true
                     },
-                    onSpeak = { speakVerse(verse) },
+                    onSpeak = { speaker.speak(verse, dueRepeatMode) },
                     onHideMore = {
-                        val totalWords = verse.text.split(" ").size
+                        val totalWords = verseWords.size
                         hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
                     },
-                    onReveal = { hiddenWordCount = (hiddenWordCount - 2).coerceAtLeast(0) },
+                    onRepeatToggle = { dueRepeatMode = dueRepeatMode.next() },
                     onNextVerse = {
                         verseIndex = (verseIndex + 1) % starterVerses.size
                         hiddenWordCount = 0
+                        dueRepeatMode = RepeatMode.Off
                     },
-                    hiddenWordCount = hiddenWordCount
+                    dueRepeatMode = dueRepeatMode,
+                    dueIsLooping = speaker.isLooping && dueRepeatMode == RepeatMode.Infinite,
+                    hiddenWordCount = hiddenWordCount,
+                    isReviewing = isReviewing,
+                    onExitReview = {
+                        isReviewing = false
+                        speaker.stop()
+                    },
+                    onPreviousVerse = {
+                        verseIndex = if (verseIndex == 0) starterVerses.lastIndex else verseIndex - 1
+                        hiddenWordCount = 0
+                    },
+                    reviewContent = {
+                        ReviewPracticeCard(
+                            verse = verse,
+                            verseWords = verseWords,
+                            hiddenIndices = reviewHiddenIndices,
+                            matchedIndices = matchedIndices,
+                            showAnswer = showReviewAnswer,
+                            recognizedText = recognizedText,
+                            repeatMode = repeatMode,
+                            isLooping = speaker.isLooping,
+                            isListening = voiceRecognizer.isListening,
+                            voiceLevel = voiceLevel,
+                            onAnswerClick = {
+                                reviewScope.launch {
+                                    showReviewAnswer = true
+                                    delay(1000)
+                                    showReviewAnswer = false
+                                }
+                            },
+                            onSpeakClick = { speaker.speak(verse, repeatMode) },
+                            onRepeatClick = { repeatMode = repeatMode.next() },
+                            onMicClick = {
+                                if (voiceRecognizer.isListening) {
+                                    voiceRecognizer.stopListening()
+                                } else if (
+                                    ContextCompat.checkSelfPermission(
+                                        context,
+                                        Manifest.permission.RECORD_AUDIO
+                                    ) == PackageManager.PERMISSION_GRANTED
+                                ) {
+                                    voiceRecognizer.startListening()
+                                } else {
+                                    microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
+                            }
+                        )
+                    }
                 )
             }
             BottomTab.Progress -> {
@@ -203,11 +340,17 @@ private fun ReviewScreen(
     passCount: Int,
     progressPercent: Int,
     hiddenWordCount: Int,
+    dueRepeatMode: RepeatMode,
+    dueIsLooping: Boolean,
+    isReviewing: Boolean,
     onPlay: () -> Unit,
     onSpeak: () -> Unit,
     onHideMore: () -> Unit,
-    onReveal: () -> Unit,
-    onNextVerse: () -> Unit
+    onRepeatToggle: () -> Unit,
+    onNextVerse: () -> Unit,
+    onExitReview: () -> Unit,
+    onPreviousVerse: () -> Unit,
+    reviewContent: @Composable () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -226,7 +369,16 @@ private fun ReviewScreen(
             passCount = passCount,
             progressPercent = progressPercent
         )
-        PlayPill(onPlay = onPlay)
+        if (isReviewing) {
+            ReviewTransportRow(
+                onPreviousVerse = onPreviousVerse,
+                onExitReview = onExitReview,
+                onNextVerse = onNextVerse
+            )
+            reviewContent()
+        } else {
+            PlayPill(onPlay = onPlay)
+        }
         Text(
             text = "Due Now",
             style = MaterialTheme.typography.titleLarge,
@@ -239,8 +391,10 @@ private fun ReviewScreen(
             progressPercent = progressPercent,
             onSpeak = onSpeak,
             onHideMore = onHideMore,
-            onReveal = onReveal,
-            onNextVerse = onNextVerse
+            onRepeatToggle = onRepeatToggle,
+            onNextVerse = onNextVerse,
+            repeatMode = dueRepeatMode,
+            isLooping = dueIsLooping
         )
         DropZone(text = "Hold and drag an upcoming verse here")
         Text(
@@ -251,6 +405,64 @@ private fun ReviewScreen(
         )
         DropZone(text = "Hold and drag a due verse here")
         Spacer(modifier = Modifier.height(16.dp))
+    }
+}
+
+@Composable
+private fun ReviewTransportRow(
+    onPreviousVerse: () -> Unit,
+    onExitReview: () -> Unit,
+    onNextVerse: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        ReviewTransportButton(
+            modifier = Modifier.weight(1f),
+            icon = Icons.Filled.NavigateBefore,
+            contentDescription = stringResource(R.string.previous_verse),
+            onClick = onPreviousVerse,
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f)
+        )
+        ReviewTransportButton(
+            modifier = Modifier.weight(1f),
+            icon = Icons.Filled.NotInterested,
+            contentDescription = stringResource(R.string.stop_review),
+            onClick = onExitReview,
+            containerColor = MaterialTheme.colorScheme.primary
+        )
+        ReviewTransportButton(
+            modifier = Modifier.weight(1f),
+            icon = Icons.Filled.NavigateNext,
+            contentDescription = stringResource(R.string.next_verse),
+            onClick = onNextVerse,
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f)
+        )
+    }
+}
+
+@Composable
+private fun ReviewTransportButton(
+    modifier: Modifier,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    containerColor: Color
+) {
+    Button(
+        onClick = onClick,
+        modifier = modifier.height(78.dp),
+        shape = RoundedCornerShape(30.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = containerColor),
+        contentPadding = PaddingValues(0.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = Color.White,
+            modifier = Modifier.size(34.dp)
+        )
     }
 }
 
@@ -696,8 +908,10 @@ private fun DueVerseCard(
     progressPercent: Int,
     onSpeak: () -> Unit,
     onHideMore: () -> Unit,
-    onReveal: () -> Unit,
-    onNextVerse: () -> Unit
+    onRepeatToggle: () -> Unit,
+    onNextVerse: () -> Unit,
+    repeatMode: RepeatMode,
+    isLooping: Boolean
 ) {
     Card(
         shape = RoundedCornerShape(22.dp),
@@ -741,8 +955,10 @@ private fun DueVerseCard(
                 ActionRow(
                     onHideMore = onHideMore,
                     onSpeak = onSpeak,
-                    onReveal = onReveal,
-                    onNextVerse = onNextVerse
+                    onRepeat = onRepeatToggle,
+                    onNextVerse = onNextVerse,
+                    repeatMode = repeatMode,
+                    isLooping = isLooping
                 )
             }
             VersePreview(
@@ -764,11 +980,246 @@ private fun DueVerseCard(
 }
 
 @Composable
+private fun ReviewPracticeCard(
+    verse: Verse,
+    verseWords: List<String>,
+    hiddenIndices: Set<Int>,
+    matchedIndices: Set<Int>,
+    showAnswer: Boolean,
+    recognizedText: String,
+    repeatMode: RepeatMode,
+    isLooping: Boolean,
+    isListening: Boolean,
+    voiceLevel: Float,
+    onAnswerClick: () -> Unit,
+    onSpeakClick: () -> Unit,
+    onRepeatClick: () -> Unit,
+    onMicClick: () -> Unit
+) {
+    val fullMatch = hiddenIndices.isNotEmpty() && hiddenIndices.all { it in matchedIndices }
+
+    Card(
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = verse.reference,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                ReviewActionRow(
+                    repeatMode = repeatMode,
+                    isLooping = isLooping,
+                    isListening = isListening,
+                    onAnswerClick = onAnswerClick,
+                    onSpeakClick = onSpeakClick,
+                    onRepeatClick = onRepeatClick,
+                    onMicClick = onMicClick
+                )
+            }
+            ReviewVerseText(
+                verseWords = verseWords,
+                hiddenIndices = hiddenIndices,
+                matchedIndices = matchedIndices,
+                showAnswer = showAnswer,
+                fullMatch = fullMatch
+            )
+            VoiceLevelIndicator(
+                level = voiceLevel,
+                active = isListening
+            )
+            if (recognizedText.isNotBlank() || isListening) {
+                Text(
+                    text = if (recognizedText.isNotBlank()) recognizedText else "Listening...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun VoiceLevelIndicator(level: Float, active: Boolean) {
+    Row(
+        modifier = Modifier
+            .background(
+                Color.White.copy(alpha = 0.08f),
+                RoundedCornerShape(12.dp)
+            )
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        repeat(14) { index ->
+            val threshold = (index + 1) / 14f
+            val lit = active && level >= threshold
+            Box(
+                modifier = Modifier
+                    .width(6.dp)
+                    .height(if (index % 3 == 0) 18.dp else 12.dp)
+                    .background(
+                        if (lit) Color(0xFFFF4A57) else Color.White.copy(alpha = 0.16f),
+                        RoundedCornerShape(999.dp)
+                    )
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReviewActionRow(
+    repeatMode: RepeatMode,
+    isLooping: Boolean,
+    isListening: Boolean,
+    onAnswerClick: () -> Unit,
+    onSpeakClick: () -> Unit,
+    onRepeatClick: () -> Unit,
+    onMicClick: () -> Unit
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        ReviewIconButton(
+            icon = Icons.Filled.Lightbulb,
+            label = stringResource(R.string.answer_peek),
+            tint = Color.White,
+            backgroundColor = MaterialTheme.colorScheme.primary,
+            onClick = onAnswerClick
+        )
+        ReviewIconButton(
+            icon = Icons.Filled.VolumeUp,
+            label = stringResource(R.string.speak_verse),
+            tint = Color.White,
+            backgroundColor = Color.Transparent,
+            onClick = onSpeakClick
+        )
+        ReviewRepeatButton(
+            repeatMode = repeatMode,
+            isLooping = isLooping,
+            onClick = onRepeatClick
+        )
+        ReviewIconButton(
+            icon = Icons.Filled.KeyboardVoice,
+            label = stringResource(R.string.voice_check),
+            tint = Color.White,
+            backgroundColor = if (isListening) Color(0xFFB73A3A) else Color.Transparent,
+            borderColor = Color(0xFFB73A3A),
+            onClick = onMicClick
+        )
+    }
+}
+
+@Composable
+private fun ReviewRepeatButton(
+    repeatMode: RepeatMode,
+    isLooping: Boolean,
+    onClick: () -> Unit
+) {
+    Box(contentAlignment = Alignment.TopEnd) {
+        ReviewIconButton(
+            icon = Icons.Filled.Repeat,
+            label = stringResource(R.string.repeat_mode),
+            tint = if (repeatMode == RepeatMode.Off) Color.White else MaterialTheme.colorScheme.primary,
+            backgroundColor = Color.Transparent,
+            onClick = onClick
+        )
+        if (repeatMode != RepeatMode.Off) {
+            Box(
+                modifier = Modifier
+                    .size(16.dp)
+                    .background(
+                        if (isLooping) MaterialTheme.colorScheme.primary else Color.White,
+                        CircleShape
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = repeatMode.badge,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (isLooping) Color.Black else MaterialTheme.colorScheme.background
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReviewIconButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    tint: Color,
+    backgroundColor: Color,
+    onClick: () -> Unit,
+    borderColor: Color = Color.Transparent
+) {
+    Box(
+        modifier = Modifier
+            .size(42.dp)
+            .background(
+                if (backgroundColor == Color.Transparent) Color.Transparent else backgroundColor,
+                CircleShape
+            )
+            .border(
+                width = if (borderColor == Color.Transparent) 0.dp else 2.dp,
+                color = borderColor,
+                shape = CircleShape
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = tint,
+            modifier = Modifier.size(24.dp)
+        )
+    }
+}
+
+@Composable
+private fun ReviewVerseText(
+    verseWords: List<String>,
+    hiddenIndices: Set<Int>,
+    matchedIndices: Set<Int>,
+    showAnswer: Boolean,
+    fullMatch: Boolean
+) {
+    val textColor = if (fullMatch) Color(0xFF47D16A) else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.76f)
+    val verseText = buildAnnotatedString {
+        verseWords.forEachIndexed { index, word ->
+            val visible = showAnswer || fullMatch || index !in hiddenIndices || index in matchedIndices
+            withStyle(SpanStyle(color = textColor)) {
+                append(if (visible) word else "_".repeat(word.filter { !it.isWhitespace() }.length.coerceAtLeast(2)))
+            }
+            if (index != verseWords.lastIndex) append(" ")
+        }
+    }
+
+    Text(
+        text = verseText,
+        style = MaterialTheme.typography.bodyLarge
+    )
+}
+
+@Composable
 private fun ActionRow(
     onHideMore: () -> Unit,
     onSpeak: () -> Unit,
-    onReveal: () -> Unit,
-    onNextVerse: () -> Unit
+    onRepeat: () -> Unit,
+    onNextVerse: () -> Unit,
+    repeatMode: RepeatMode,
+    isLooping: Boolean
 ) {
     Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
         SmallIconButton(
@@ -783,11 +1234,10 @@ private fun ActionRow(
             tint = MaterialTheme.colorScheme.onBackground,
             onClick = onSpeak
         )
-        SmallIconButton(
-            icon = Icons.Filled.SwapHoriz,
-            label = stringResource(R.string.reveal_words),
-            tint = MaterialTheme.colorScheme.onBackground,
-            onClick = onReveal
+        ReviewRepeatButton(
+            repeatMode = repeatMode,
+            isLooping = isLooping,
+            onClick = onRepeat
         )
         SmallIconButton(
             icon = Icons.Filled.DeleteOutline,
@@ -831,6 +1281,175 @@ private fun VersePreview(verse: Verse, hiddenWordCount: Int) {
         maxLines = 4,
         overflow = TextOverflow.Ellipsis
     )
+}
+
+private fun buildReviewHiddenIndices(words: List<String>): Set<Int> =
+    words.mapIndexedNotNull { index, word ->
+        val normalized = normalizeToken(word)
+        if (index % 3 != 1 && normalized.length > 2) index else null
+    }.toSet()
+
+private fun matchRecognizedWords(
+    verseWords: List<String>,
+    hiddenIndices: Set<Int>,
+    recognizedText: String
+): Set<Int> {
+    val spokenTokens = recognizedText.split(" ")
+        .map(::normalizeToken)
+        .filter { it.isNotBlank() }
+        .toSet()
+
+    return hiddenIndices.filter { index ->
+        spokenTokens.contains(normalizeToken(verseWords[index]))
+    }.toSet()
+}
+
+private fun normalizeToken(token: String): String =
+    token.lowercase(Locale.US).replace(Regex("[^\\p{L}\\p{N}]"), "")
+
+private data class VoiceRecognizerController(
+    val startListening: () -> Unit,
+    val stopListening: () -> Unit,
+    val isListening: Boolean
+)
+
+@Composable
+private fun rememberVoiceRecognizer(
+    onResult: (String) -> Unit,
+    onError: (String) -> Unit,
+    onListeningStateChanged: (Boolean) -> Unit,
+    onLevelChanged: (Float) -> Unit
+): VoiceRecognizerController {
+    val context = LocalContext.current
+    val currentOnResult by rememberUpdatedState(onResult)
+    val currentOnError by rememberUpdatedState(onError)
+    val currentOnListeningStateChanged by rememberUpdatedState(onListeningStateChanged)
+    val currentOnLevelChanged by rememberUpdatedState(onLevelChanged)
+    var speechRecognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
+    var isListening by remember { mutableStateOf(false) }
+    var shouldKeepListening by remember { mutableStateOf(false) }
+
+    fun buildRecognizerIntent(): Intent =
+        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 30000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 30000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 30000L)
+        }
+
+    DisposableEffect(context) {
+        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+            currentOnError("Speech recognition is not available on this device.")
+            onDispose { }
+        } else {
+            val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
+            recognizer.setRecognitionListener(object : RecognitionListener {
+                override fun onReadyForSpeech(params: Bundle?) {
+                    isListening = true
+                    currentOnListeningStateChanged(true)
+                }
+
+                override fun onBeginningOfSpeech() = Unit
+
+                override fun onRmsChanged(rmsdB: Float) {
+                    currentOnLevelChanged((rmsdB / 10f).coerceIn(0f, 1f))
+                }
+
+                override fun onBufferReceived(buffer: ByteArray?) = Unit
+
+                override fun onEndOfSpeech() {
+                    isListening = false
+                    currentOnListeningStateChanged(false)
+                    currentOnLevelChanged(0f)
+                }
+
+                override fun onError(error: Int) {
+                    isListening = false
+                    currentOnListeningStateChanged(false)
+                    currentOnLevelChanged(0f)
+                    when (error) {
+                        SpeechRecognizer.ERROR_NO_MATCH,
+                        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
+                            currentOnError("Didn't catch that. Try speaking again.")
+                        }
+                        SpeechRecognizer.ERROR_CLIENT,
+                        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> {
+                            currentOnError("")
+                        }
+                        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
+                            currentOnError("Microphone permission is required.")
+                        }
+                        SpeechRecognizer.ERROR_NETWORK,
+                        SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> {
+                            currentOnError("Speech recognition network error.")
+                        }
+                        SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+                        SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> {
+                            currentOnError("Speech recognition language is not available.")
+                        }
+                        else -> {
+                            currentOnError("Speech recognition is unavailable right now.")
+                        }
+                    }
+                }
+
+                override fun onResults(results: Bundle?) {
+                    isListening = false
+                    currentOnListeningStateChanged(false)
+                    currentOnLevelChanged(0f)
+                    val spokenText = results
+                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        ?.firstOrNull()
+                        .orEmpty()
+                    currentOnResult(spokenText)
+                }
+
+                override fun onPartialResults(partialResults: Bundle?) {
+                    val spokenText = partialResults
+                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        ?.firstOrNull()
+                        .orEmpty()
+                    if (spokenText.isNotBlank()) {
+                        currentOnResult(spokenText)
+                    }
+                }
+
+                override fun onEvent(eventType: Int, params: Bundle?) = Unit
+            })
+            speechRecognizer = recognizer
+
+            onDispose {
+                shouldKeepListening = false
+                recognizer.stopListening()
+                recognizer.cancel()
+                recognizer.destroy()
+                speechRecognizer = null
+                isListening = false
+            }
+        }
+    }
+
+    return remember(speechRecognizer, isListening) {
+        VoiceRecognizerController(
+            startListening = {
+                shouldKeepListening = true
+                speechRecognizer?.startListening(buildRecognizerIntent())
+            },
+            stopListening = {
+                shouldKeepListening = false
+                speechRecognizer?.stopListening()
+                speechRecognizer?.cancel()
+                isListening = false
+                currentOnListeningStateChanged(false)
+                currentOnLevelChanged(0f)
+            },
+            isListening = isListening
+        )
+    }
 }
 
 @Composable
@@ -908,11 +1527,20 @@ private fun BottomNavBar(selectedTab: BottomTab, onSelect: (BottomTab) -> Unit) 
     }
 }
 
+private data class VerseSpeakerController(
+    val speak: (Verse, RepeatMode) -> Unit,
+    val stop: () -> Unit,
+    val isLooping: Boolean
+)
+
 @Composable
-private fun rememberVerseSpeaker(speechRate: Float): (Verse) -> Unit {
+private fun rememberVerseSpeaker(speechRate: Float): VerseSpeakerController {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var textToSpeech by remember { mutableStateOf<TextToSpeech?>(null) }
     var isReady by remember { mutableStateOf(false) }
+    var repeatJob by remember { mutableStateOf<Job?>(null) }
+    var isLooping by remember { mutableStateOf(false) }
 
     DisposableEffect(context) {
         var engine: TextToSpeech? = null
@@ -925,10 +1553,12 @@ private fun rememberVerseSpeaker(speechRate: Float): (Verse) -> Unit {
         textToSpeech = engine
 
         onDispose {
+            repeatJob?.cancel()
             engine?.stop()
             engine?.shutdown()
             textToSpeech = null
             isReady = false
+            isLooping = false
         }
     }
 
@@ -939,18 +1569,61 @@ private fun rememberVerseSpeaker(speechRate: Float): (Verse) -> Unit {
         onDispose { }
     }
 
-    return remember(textToSpeech, isReady, speechRate) {
-        { verse: Verse ->
-            if (isReady) {
-                textToSpeech?.speak(
-                    "${verse.reference}. ${verse.text}",
-                    TextToSpeech.QUEUE_FLUSH,
-                    null,
-                    verse.reference
-                )
-            }
-        }
+    return remember(textToSpeech, isReady, speechRate, repeatJob, isLooping) {
+        VerseSpeakerController(
+            speak = { verse: Verse, repeatMode: RepeatMode ->
+                val tts = textToSpeech
+                if (isReady && tts != null) {
+                    val utterance = "${verse.reference}. ${verse.text}"
+
+                    repeatJob?.cancel()
+                    repeatJob = null
+                    isLooping = false
+                    tts.stop()
+
+                    when (repeatMode) {
+                        RepeatMode.Off -> {
+                            tts.speak(utterance, TextToSpeech.QUEUE_FLUSH, null, verse.reference)
+                        }
+                        RepeatMode.Once,
+                        RepeatMode.Twice -> {
+                            val totalTimes = if (repeatMode == RepeatMode.Once) 2 else 3
+                            repeat(totalTimes) { index ->
+                                tts.speak(
+                                    utterance,
+                                    if (index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD,
+                                    null,
+                                    "${verse.reference}-$index"
+                                )
+                            }
+                        }
+                        RepeatMode.Infinite -> {
+                            isLooping = true
+                            repeatJob = scope.launch {
+                                while (isActive) {
+                                    tts.speak(utterance, TextToSpeech.QUEUE_FLUSH, null, verse.reference)
+                                    delay(estimateSpeechDurationMillis(utterance, speechRate))
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            stop = {
+                repeatJob?.cancel()
+                repeatJob = null
+                isLooping = false
+                textToSpeech?.stop()
+            },
+            isLooping = isLooping
+        )
     }
+}
+
+private fun estimateSpeechDurationMillis(text: String, speechRate: Float): Long {
+    val words = text.split(" ").size.coerceAtLeast(1)
+    val baseDuration = words * 420L
+    return (baseDuration / speechRate.coerceAtLeast(0.1f)).toLong().coerceAtLeast(1200L)
 }
 
 private fun Float.snapToTenth(): Float = (this * 10f).roundToInt() / 10f
