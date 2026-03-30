@@ -1,4 +1,10 @@
 <resources>
     <string name="app_name">Bible Memorize</string>
     <string name="speak_verse">Speak verse</string>
+    <string name="add_verse">Add verse</string>
+    <string name="play_review">Play review</string>
+    <string name="hide_more">Hide more words</string>
+    <string name="reveal_words">Reveal words</string>
+    <string name="next_verse">Next verse</string>
+    <string name="reset_progress">Reset progress</string>
 </resources>

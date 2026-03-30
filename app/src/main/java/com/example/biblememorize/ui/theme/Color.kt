@@ -2,9 +2,11 @@ package com.example.biblememorize.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-val WarmGold = Color(0xFFB7791F)
-val Sand = Color(0xFFF5E6C8)
-val Olive = Color(0xFF5F6F52)
-val Clay = Color(0xFFDDA15E)
-val Charcoal = Color(0xFF2D2A26)
-val Linen = Color(0xFFFFFBF5)
+val NeonBlue = Color(0xFF19A7FF)
+val DeepBlue = Color(0xFF0D5FB8)
+val Night = Color(0xFF050608)
+val Graphite = Color(0xFF15171A)
+val Slate = Color(0xFF23262B)
+val Mist = Color(0xFFC8E9FF)
+val Silver = Color(0xFFA7ABB4)
+val Lime = Color(0xFF41D96E)
