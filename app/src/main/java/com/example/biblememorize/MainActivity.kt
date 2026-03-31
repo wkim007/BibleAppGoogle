@@ -16,6 +16,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -102,6 +103,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.core.content.ContextCompat
 import com.example.biblememorize.ui.theme.BibleMemorizeTheme
 import java.util.Locale
@@ -223,6 +226,11 @@ private data class PendingDelete(
     val section: VerseSection
 )
 
+private data class PendingEdit(
+    val verse: Verse,
+    val section: VerseSection
+)
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -258,12 +266,13 @@ private fun MemorizeApp() {
     var showCompletionDialog by remember { mutableStateOf(false) }
     var pendingReviewCompletion by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<PendingDelete?>(null) }
+    var pendingEdit by remember { mutableStateOf<PendingEdit?>(null) }
     var voiceLevel by remember { mutableStateOf(0f) }
     val dueVerses = remember { mutableStateListOf(starterVerses.first()) }
     val upcomingVerses = remember { mutableStateListOf(*starterVerses.drop(1).toTypedArray()) }
     val verse = dueVerses.firstOrNull() ?: upcomingVerses.firstOrNull() ?: starterVerses.first()
-    val verseWords = remember(verse.reference) { verse.text.split(" ") }
-    val reviewHiddenIndices = remember(verse.reference) { buildReviewHiddenIndices(verseWords) }
+    val verseWords = remember(verse.id, verse.reference, verse.text) { verse.text.split(" ") }
+    val reviewHiddenIndices = remember(verse.id, verse.reference, verse.text) { buildReviewHiddenIndices(verseWords) }
     val dueCount = dueVerses.size
     val reviewScope = rememberCoroutineScope()
     val speaker = rememberVerseSpeaker(speechRate)
@@ -366,6 +375,29 @@ private fun MemorizeApp() {
         }
     }
 
+    val applyVerseEdit: (PendingEdit, Verse, VerseContentType) -> Unit = { editState, updatedVerse, contentType ->
+        val sourceList = if (editState.section == VerseSection.DueNow) dueVerses else upcomingVerses
+        val targetSection = if (contentType == VerseContentType.DueNow) VerseSection.DueNow else VerseSection.Upcoming
+        val targetList = if (targetSection == VerseSection.DueNow) dueVerses else upcomingVerses
+        val sourceIndex = sourceList.indexOfFirst { it.id == editState.verse.id }
+
+        if (sourceIndex >= 0) {
+            sourceList.removeAt(sourceIndex)
+            if (targetSection == editState.section) {
+                sourceList.add(sourceIndex.coerceAtMost(sourceList.size), updatedVerse)
+            } else if (targetSection == VerseSection.DueNow) {
+                targetList.add(0, updatedVerse)
+            } else {
+                targetList.add(updatedVerse)
+            }
+        }
+
+        if (verse.id == editState.verse.id) {
+            hiddenWordCount = 0
+            resetReviewSession()
+        }
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
@@ -403,10 +435,6 @@ private fun MemorizeApp() {
                                 dueRepeatModes[selectedVerse.id] ?: RepeatMode.Off
                             )
                         },
-                        onHideMore = {
-                            val totalWords = verseWords.size
-                            hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
-                        },
                         onRepeatToggle = { selectedVerse ->
                             val currentMode = dueRepeatModes[selectedVerse.id] ?: RepeatMode.Off
                             dueRepeatModes = dueRepeatModes + (selectedVerse.id to currentMode.next())
@@ -424,8 +452,14 @@ private fun MemorizeApp() {
                         onDeleteDueVerse = { selectedVerse ->
                             pendingDelete = PendingDelete(selectedVerse, VerseSection.DueNow)
                         },
+                        onEditDueVerse = { selectedVerse ->
+                            pendingEdit = PendingEdit(selectedVerse, VerseSection.DueNow)
+                        },
                         onDeleteUpcomingVerse = { selectedVerse ->
                             pendingDelete = PendingDelete(selectedVerse, VerseSection.Upcoming)
+                        },
+                        onEditUpcomingVerse = { selectedVerse ->
+                            pendingEdit = PendingEdit(selectedVerse, VerseSection.Upcoming)
                         },
                         onNextVerse = {
                             if (dueVerses.size > 1) {
@@ -545,6 +579,21 @@ private fun MemorizeApp() {
                     onDismiss = { pendingDelete = null }
                 )
             }
+            pendingEdit?.let { editState ->
+                EditVerseScreen(
+                    verse = editState.verse,
+                    initialType = if (editState.section == VerseSection.DueNow) {
+                        VerseContentType.DueNow
+                    } else {
+                        VerseContentType.Upcoming
+                    },
+                    onCancel = { pendingEdit = null },
+                    onSave = { updatedVerse, updatedType ->
+                        applyVerseEdit(editState, updatedVerse, updatedType)
+                        pendingEdit = null
+                    }
+                )
+            }
             if (showAddVersePage) {
                 AddVerseScreen(
                     initialBibleVersion = selectedBibleVersion,
@@ -583,11 +632,12 @@ private fun ReviewScreen(
     onPlay: () -> Unit,
     onSpeak: (Verse) -> Unit,
     onUpcomingSpeak: (Verse) -> Unit,
-    onHideMore: () -> Unit,
     onRepeatToggle: (Verse) -> Unit,
     onUpcomingRepeatToggle: (Verse) -> Unit,
     onDeleteDueVerse: (Verse) -> Unit,
+    onEditDueVerse: (Verse) -> Unit,
     onDeleteUpcomingVerse: (Verse) -> Unit,
+    onEditUpcomingVerse: (Verse) -> Unit,
     onNextVerse: () -> Unit,
     onExitReview: () -> Unit,
     onPreviousVerse: () -> Unit,
@@ -666,8 +716,8 @@ private fun ReviewScreen(
                                 verse = dueVerse,
                                 hiddenWordCount = if (dueVerse.id == verse.id) hiddenWordCount else 0,
                                 progressPercent = if (dueVerse.id == verse.id) progressPercent else 0,
+                                onEdit = { onEditDueVerse(dueVerse) },
                                 onSpeak = { onSpeak(dueVerse) },
-                                onHideMore = onHideMore,
                                 onRepeatToggle = { onRepeatToggle(dueVerse) },
                                 onNextVerse = { onDeleteDueVerse(dueVerse) },
                                 repeatMode = dueRepeatModes[dueVerse.id] ?: RepeatMode.Off,
@@ -716,8 +766,8 @@ private fun ReviewScreen(
                                 verse = upcomingVerse,
                                 hiddenWordCount = 0,
                                 progressPercent = 0,
+                                onEdit = { onEditUpcomingVerse(upcomingVerse) },
                                 onSpeak = { onUpcomingSpeak(upcomingVerse) },
-                                onHideMore = {},
                                 onRepeatToggle = { onUpcomingRepeatToggle(upcomingVerse) },
                                 onNextVerse = { onDeleteUpcomingVerse(upcomingVerse) },
                                 repeatMode = upcomingRepeatModes[upcomingVerse.id] ?: RepeatMode.Off,
@@ -904,6 +954,8 @@ private fun AddVerseScreen(
     var dictatedPrefix by remember { mutableStateOf("") }
     val maxVerse = selectedBook.knownVerseCounts[selectedChapter] ?: 50
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val addVoiceRecognizer = rememberVoiceRecognizer(
         onResult = { spokenText ->
             val updatedText = mergeRecognizedText(dictatedPrefix, spokenText)
@@ -930,7 +982,14 @@ private fun AddVerseScreen(
     if (selectedVerseEnd < selectedVerseStart) selectedVerseEnd = selectedVerseStart
 
     Surface(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                detectTapGestures {
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                }
+            },
         color = MaterialTheme.colorScheme.background
     ) {
         Column(
@@ -1107,6 +1166,185 @@ private fun AddVerseScreen(
                             .fillMaxWidth()
                             .height(180.dp),
                         placeholder = { Text("Verse Text") },
+                        colors = darkFieldColors()
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EditVerseScreen(
+    verse: Verse,
+    initialType: VerseContentType,
+    onCancel: () -> Unit,
+    onSave: (Verse, VerseContentType) -> Unit
+) {
+    var selectedBibleVersion by remember { mutableStateOf(verse.translation) }
+    var selectedType by remember { mutableStateOf(initialType) }
+    var verseText by remember { mutableStateOf(verse.text) }
+    var dictatedPrefix by remember { mutableStateOf(verse.text.trim()) }
+    val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val editVoiceRecognizer = rememberVoiceRecognizer(
+        onResult = { spokenText ->
+            val updatedText = mergeRecognizedText(dictatedPrefix, spokenText)
+            dictatedPrefix = updatedText
+            verseText = updatedText
+        },
+        onPartialResult = { spokenText ->
+            verseText = mergeRecognizedText(dictatedPrefix, spokenText)
+        },
+        onError = {},
+        onListeningStateChanged = { _ -> },
+        onLevelChanged = {}
+    )
+    val editVoicePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            editVoiceRecognizer.startListening()
+        }
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                detectTapGestures {
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                }
+            },
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(18.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RoundedTextButton("Cancel", onCancel)
+                RoundedTextButton(
+                    text = "Save",
+                    onClick = {
+                        editVoiceRecognizer.stopListening()
+                        onSave(
+                            verse.copy(
+                                translation = selectedBibleVersion,
+                                text = verseText
+                            ),
+                            selectedType
+                        )
+                    },
+                    enabled = verseText.isNotBlank()
+                )
+            }
+            Text(
+                text = "Edit Verse",
+                style = MaterialTheme.typography.displaySmall,
+                fontWeight = FontWeight.Black,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Text(
+                text = "Reference",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Card(
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    TextField(
+                        value = verse.reference,
+                        onValueChange = {},
+                        readOnly = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Verse") },
+                        colors = darkFieldColors()
+                    )
+                    SelectionDropdownField("Bible Version", selectedBibleVersion, bibleVersions) {
+                        selectedBibleVersion = it
+                    }
+                }
+            }
+            Text(
+                text = "Verse Text",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Card(
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    SelectionDropdownField("Type", selectedType.label, VerseContentType.entries.map { it.label }) {
+                        selectedType = VerseContentType.entries.first { item -> item.label == it }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Verse Text",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        SmallIconButton(
+                            icon = Icons.Filled.KeyboardVoice,
+                            label = stringResource(R.string.start_voice_input),
+                            tint = if (editVoiceRecognizer.isListening) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
+                            onClick = {
+                                if (editVoiceRecognizer.isListening) {
+                                    dictatedPrefix = verseText.trim()
+                                    editVoiceRecognizer.stopListening()
+                                } else if (
+                                    ContextCompat.checkSelfPermission(
+                                        context,
+                                        Manifest.permission.RECORD_AUDIO
+                                    ) == PackageManager.PERMISSION_GRANTED
+                                ) {
+                                    dictatedPrefix = verseText.trim()
+                                    editVoiceRecognizer.startListening()
+                                } else {
+                                    dictatedPrefix = verseText.trim()
+                                    editVoicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
+                            }
+                        )
+                    }
+                    TextField(
+                        value = verseText,
+                        onValueChange = {
+                            verseText = it
+                            dictatedPrefix = it.trim()
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(220.dp),
                         colors = darkFieldColors()
                     )
                 }
@@ -1616,8 +1854,8 @@ private fun DueVerseCard(
     verse: Verse,
     hiddenWordCount: Int,
     progressPercent: Int,
+    onEdit: () -> Unit,
     onSpeak: () -> Unit,
-    onHideMore: () -> Unit,
     onRepeatToggle: () -> Unit,
     onNextVerse: () -> Unit,
     repeatMode: RepeatMode,
@@ -1663,7 +1901,7 @@ private fun DueVerseCard(
                     }
                 }
                 ActionRow(
-                    onHideMore = onHideMore,
+                    onEdit = onEdit,
                     onSpeak = onSpeak,
                     onRepeat = onRepeatToggle,
                     onNextVerse = onNextVerse,
@@ -1985,7 +2223,7 @@ private fun ReviewVerseText(
 
 @Composable
 private fun ActionRow(
-    onHideMore: () -> Unit,
+    onEdit: () -> Unit,
     onSpeak: () -> Unit,
     onRepeat: () -> Unit,
     onNextVerse: () -> Unit,
@@ -1995,9 +2233,9 @@ private fun ActionRow(
     Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
         SmallIconButton(
             icon = Icons.Filled.Edit,
-            label = stringResource(R.string.hide_more),
+            label = "Edit verse",
             tint = MaterialTheme.colorScheme.onBackground,
-            onClick = onHideMore
+            onClick = onEdit
         )
         SmallIconButton(
             icon = Icons.Filled.VolumeUp,
