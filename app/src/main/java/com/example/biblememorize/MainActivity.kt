@@ -15,6 +15,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -73,15 +75,22 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -101,6 +110,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 data class Verse(
+    val id: String,
     val reference: String,
     val translation: String,
     val text: String,
@@ -109,18 +119,21 @@ data class Verse(
 
 private val starterVerses = listOf(
     Verse(
+        id = "joshua-1-9",
         reference = "Joshua 1:9",
         translation = "NKJV",
         text = "Have I not commanded you? Be strong and of good courage; do not be afraid, nor be dismayed, for the Lord your God is with you wherever you go.",
         prompt = "Courage comes with God's presence."
     ),
     Verse(
+        id = "psalm-119-11",
         reference = "Psalm 119:11",
         translation = "NIV",
         text = "I have hidden your word in my heart that I might not sin against you.",
         prompt = "Hide Scripture in your heart."
     ),
     Verse(
+        id = "philippians-4-6",
         reference = "Philippians 4:6",
         translation = "NIV",
         text = "Do not be anxious about anything, but in every situation, by prayer and petition, with thanksgiving, present your requests to God.",
@@ -150,6 +163,17 @@ private enum class RepeatMode(val badge: String) {
     }
 }
 
+private enum class VerseSection {
+    DueNow,
+    Upcoming
+}
+
+private data class DragState(
+    val verse: Verse,
+    val fromSection: VerseSection,
+    val position: Offset
+)
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -168,7 +192,6 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun MemorizeApp() {
-    var verseIndex by remember { mutableIntStateOf(0) }
     var passCount by remember { mutableIntStateOf(0) }
     var hiddenWordCount by remember { mutableIntStateOf(0) }
     var selectedTab by remember { mutableStateOf(BottomTab.Review) }
@@ -184,10 +207,12 @@ private fun MemorizeApp() {
     var showCompletionDialog by remember { mutableStateOf(false) }
     var pendingReviewCompletion by remember { mutableStateOf(false) }
     var voiceLevel by remember { mutableStateOf(0f) }
-    val verse = starterVerses[verseIndex]
+    val dueVerses = remember { mutableStateListOf(starterVerses.first()) }
+    val upcomingVerses = remember { mutableStateListOf(*starterVerses.drop(1).toTypedArray()) }
+    val verse = dueVerses.firstOrNull() ?: upcomingVerses.firstOrNull() ?: starterVerses.first()
     val verseWords = remember(verse.reference) { verse.text.split(" ") }
     val reviewHiddenIndices = remember(verse.reference) { buildReviewHiddenIndices(verseWords) }
-    val dueCount = 1
+    val dueCount = dueVerses.size
     val reviewScope = rememberCoroutineScope()
     val speaker = rememberVerseSpeaker(speechRate)
     val voiceRecognizer = rememberVoiceRecognizer(
@@ -239,7 +264,7 @@ private fun MemorizeApp() {
         }
     }
 
-    LaunchedEffect(verseIndex, isReviewing) {
+    LaunchedEffect(verse.id, isReviewing) {
         showReviewAnswer = false
         recognizedText = ""
         matchedIndices = emptySet()
@@ -266,6 +291,29 @@ private fun MemorizeApp() {
         }
     }
 
+    val moveVerseBetweenSections: (Verse, VerseSection, VerseSection) -> Unit = { draggedVerse, from, to ->
+        if (from != to) {
+            val fromList = if (from == VerseSection.DueNow) dueVerses else upcomingVerses
+            val toList = if (to == VerseSection.DueNow) dueVerses else upcomingVerses
+            val removeIndex = fromList.indexOfFirst { it.id == draggedVerse.id }
+            if (removeIndex >= 0) {
+                val verseToMove = fromList.removeAt(removeIndex)
+                if (to == VerseSection.DueNow) {
+                    toList.add(0, verseToMove)
+                } else {
+                    toList.add(verseToMove)
+                }
+                hiddenWordCount = 0
+                reviewCompleted = false
+                pendingReviewCompletion = false
+                recognizedText = ""
+                matchedIndices = emptySet()
+                voiceRecognizer.disableAutoRestart()
+                voiceRecognizer.stopListening()
+            }
+        }
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
@@ -289,6 +337,9 @@ private fun MemorizeApp() {
                     passCount = passCount,
                     progressPercent = displayProgressPercent,
                     onResetReview = resetReviewSession,
+                    dueVerses = dueVerses,
+                    upcomingVerses = upcomingVerses,
+                    onMoveVerse = moveVerseBetweenSections,
                     onPlay = {
                         val totalWords = verseWords.size
                         hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
@@ -301,7 +352,13 @@ private fun MemorizeApp() {
                     },
                     onRepeatToggle = { dueRepeatMode = dueRepeatMode.next() },
                     onNextVerse = {
-                        verseIndex = (verseIndex + 1) % starterVerses.size
+                        if (dueVerses.size > 1) {
+                            val first = dueVerses.removeAt(0)
+                            dueVerses.add(first)
+                        } else if (dueVerses.isNotEmpty() && upcomingVerses.isNotEmpty()) {
+                            upcomingVerses.add(dueVerses.removeAt(0))
+                            dueVerses.add(upcomingVerses.removeAt(0))
+                        }
                         hiddenWordCount = 0
                         dueRepeatMode = RepeatMode.Off
                         reviewCompleted = false
@@ -316,7 +373,12 @@ private fun MemorizeApp() {
                         speaker.stop()
                     },
                     onPreviousVerse = {
-                        verseIndex = if (verseIndex == 0) starterVerses.lastIndex else verseIndex - 1
+                        if (dueVerses.size > 1) {
+                            val last = dueVerses.removeAt(dueVerses.lastIndex)
+                            dueVerses.add(0, last)
+                        } else if (upcomingVerses.isNotEmpty()) {
+                            dueVerses.add(0, upcomingVerses.removeAt(upcomingVerses.lastIndex))
+                        }
                         hiddenWordCount = 0
                         reviewCompleted = false
                         pendingReviewCompletion = false
@@ -392,6 +454,9 @@ private fun ReviewScreen(
     passCount: Int,
     progressPercent: Int,
     onResetReview: () -> Unit,
+    dueVerses: List<Verse>,
+    upcomingVerses: List<Verse>,
+    onMoveVerse: (Verse, VerseSection, VerseSection) -> Unit,
     hiddenWordCount: Int,
     dueRepeatMode: RepeatMode,
     dueIsLooping: Boolean,
@@ -405,60 +470,157 @@ private fun ReviewScreen(
     onPreviousVerse: () -> Unit,
     reviewContent: @Composable () -> Unit
 ) {
-    Column(
+    var dragState by remember { mutableStateOf<DragState?>(null) }
+    var dueBounds by remember { mutableStateOf<Rect?>(null) }
+    var upcomingBounds by remember { mutableStateOf<Rect?>(null) }
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .statusBarsPadding()
-            .padding(innerPadding)
-            .padding(horizontal = 20.dp)
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        TopBar()
-        HeroTitle()
-        StatsRow(
-            dueCount = dueCount,
-            passCount = passCount,
-            progressPercent = progressPercent,
-            onResetReview = onResetReview
-        )
-        if (isReviewing) {
-            ReviewTransportRow(
-                onPreviousVerse = onPreviousVerse,
-                onExitReview = onExitReview,
-                onNextVerse = onNextVerse
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(innerPadding)
+                .padding(horizontal = 20.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            TopBar()
+            HeroTitle()
+            StatsRow(
+                dueCount = dueCount,
+                passCount = passCount,
+                progressPercent = progressPercent,
+                onResetReview = onResetReview
             )
-            reviewContent()
-        } else {
-            PlayPill(onPlay = onPlay)
+            if (isReviewing) {
+                ReviewTransportRow(
+                    onPreviousVerse = onPreviousVerse,
+                    onExitReview = onExitReview,
+                    onNextVerse = onNextVerse
+                )
+                reviewContent()
+            } else {
+                PlayPill(onPlay = onPlay)
+            }
+            Text(
+                text = "Due Now",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Column(
+                modifier = Modifier.onGloballyPositioned { dueBounds = it.boundsInRoot() },
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                if (dueVerses.isEmpty()) {
+                    DropZone(text = "Hold and drag an upcoming verse here")
+                } else {
+                    dueVerses.forEach { dueVerse ->
+                        DraggableVerseCard(
+                            verse = dueVerse,
+                            section = VerseSection.DueNow,
+                            onDragStart = { start -> dragState = DragState(dueVerse, VerseSection.DueNow, start) },
+                            onDrag = { delta ->
+                                dragState = dragState?.copy(position = dragState!!.position + delta)
+                            },
+                            onDragEnd = {
+                                val target = when {
+                                    upcomingBounds?.contains(dragState?.position ?: Offset.Zero) == true -> VerseSection.Upcoming
+                                    dueBounds?.contains(dragState?.position ?: Offset.Zero) == true -> VerseSection.DueNow
+                                    else -> null
+                                }
+                                if (target != null) {
+                                    onMoveVerse(dueVerse, VerseSection.DueNow, target)
+                                }
+                                dragState = null
+                            }
+                        ) {
+                            DueVerseCard(
+                                verse = dueVerse,
+                                hiddenWordCount = if (dueVerse.id == verse.id) hiddenWordCount else 0,
+                                progressPercent = if (dueVerse.id == verse.id) progressPercent else 0,
+                                onSpeak = onSpeak,
+                                onHideMore = onHideMore,
+                                onRepeatToggle = onRepeatToggle,
+                                onNextVerse = onNextVerse,
+                                repeatMode = dueRepeatMode,
+                                isLooping = dueIsLooping
+                            )
+                        }
+                    }
+                }
+            }
+            Text(
+                text = "Upcoming",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Column(
+                modifier = Modifier.onGloballyPositioned { upcomingBounds = it.boundsInRoot() },
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                if (upcomingVerses.isEmpty()) {
+                    DropZone(text = "Hold and drag a due verse here")
+                } else {
+                    upcomingVerses.forEach { upcomingVerse ->
+                        DraggableVerseCard(
+                            verse = upcomingVerse,
+                            section = VerseSection.Upcoming,
+                            onDragStart = { start -> dragState = DragState(upcomingVerse, VerseSection.Upcoming, start) },
+                            onDrag = { delta ->
+                                dragState = dragState?.copy(position = dragState!!.position + delta)
+                            },
+                            onDragEnd = {
+                                val target = when {
+                                    dueBounds?.contains(dragState?.position ?: Offset.Zero) == true -> VerseSection.DueNow
+                                    upcomingBounds?.contains(dragState?.position ?: Offset.Zero) == true -> VerseSection.Upcoming
+                                    else -> null
+                                }
+                                if (target != null) {
+                                    onMoveVerse(upcomingVerse, VerseSection.Upcoming, target)
+                                }
+                                dragState = null
+                            }
+                        ) {
+                            UpcomingVerseCard(upcomingVerse)
+                        }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
         }
-        Text(
-            text = "Due Now",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onBackground
-        )
-        DueVerseCard(
-            verse = verse,
-            hiddenWordCount = hiddenWordCount,
-            progressPercent = progressPercent,
-            onSpeak = onSpeak,
-            onHideMore = onHideMore,
-            onRepeatToggle = onRepeatToggle,
-            onNextVerse = onNextVerse,
-            repeatMode = dueRepeatMode,
-            isLooping = dueIsLooping
-        )
-        DropZone(text = "Hold and drag an upcoming verse here")
-        Text(
-            text = "Upcoming",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onBackground
-        )
-        DropZone(text = "Hold and drag a due verse here")
-        Spacer(modifier = Modifier.height(16.dp))
+        dragState?.let { activeDrag ->
+            Box(
+                modifier = Modifier
+                    .padding(top = 0.dp)
+                    .offset {
+                        IntOffset(
+                            x = activeDrag.position.x.roundToInt() - 170,
+                            y = activeDrag.position.y.roundToInt() - 80
+                        )
+                    }
+            ) {
+                Card(
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f))
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text(activeDrag.verse.reference, color = MaterialTheme.colorScheme.onBackground, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = activeDrag.verse.text,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -960,6 +1122,80 @@ private fun PlayPill(onPlay: () -> Unit) {
                 contentDescription = stringResource(R.string.play_review),
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(24.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun DraggableVerseCard(
+    verse: Verse,
+    section: VerseSection,
+    onDragStart: (Offset) -> Unit,
+    onDrag: (Offset) -> Unit,
+    onDragEnd: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    var cardBounds by remember { mutableStateOf<Rect?>(null) }
+
+    Box(
+        modifier = Modifier
+            .onGloballyPositioned { coordinates ->
+                cardBounds = coordinates.boundsInRoot()
+            }
+            .pointerInput(verse.id, section, cardBounds) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { offset ->
+                        val bounds = cardBounds
+                        val start = if (bounds != null) {
+                            Offset(bounds.left + offset.x, bounds.top + offset.y)
+                        } else {
+                            offset
+                        }
+                        onDragStart(start)
+                    },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        onDrag(Offset(dragAmount.x, dragAmount.y))
+                    },
+                    onDragEnd = onDragEnd,
+                    onDragCancel = onDragEnd
+                )
+            }
+    ) {
+        content()
+    }
+}
+
+@Composable
+private fun UpcomingVerseCard(verse: Verse) {
+    Card(
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = verse.reference,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Text(
+                text = verse.text,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = "Translation: ${verse.translation}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
