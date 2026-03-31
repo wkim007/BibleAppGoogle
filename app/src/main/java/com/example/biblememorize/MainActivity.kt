@@ -75,6 +75,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -200,7 +201,8 @@ private fun MemorizeApp() {
     var isReviewing by remember { mutableStateOf(false) }
     var showReviewAnswer by remember { mutableStateOf(false) }
     var repeatMode by remember { mutableStateOf(RepeatMode.Off) }
-    var dueRepeatMode by remember { mutableStateOf(RepeatMode.Off) }
+    var dueRepeatModes by remember { mutableStateOf<Map<String, RepeatMode>>(emptyMap()) }
+    var upcomingRepeatModes by remember { mutableStateOf<Map<String, RepeatMode>>(emptyMap()) }
     var recognizedText by remember { mutableStateOf("") }
     var matchedIndices by remember { mutableStateOf(setOf<Int>()) }
     var reviewCompleted by remember { mutableStateOf(false) }
@@ -339,18 +341,39 @@ private fun MemorizeApp() {
                     onResetReview = resetReviewSession,
                     dueVerses = dueVerses,
                     upcomingVerses = upcomingVerses,
+                    dueRepeatModes = dueRepeatModes,
+                    upcomingRepeatModes = upcomingRepeatModes,
+                    activeDueLooping = speaker.isLooping,
                     onMoveVerse = moveVerseBetweenSections,
                     onPlay = {
                         val totalWords = verseWords.size
                         hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
                         isReviewing = true
                     },
-                    onSpeak = { speaker.speak(verse, dueRepeatMode) },
+                    onSpeak = { selectedVerse ->
+                        speaker.speak(
+                            selectedVerse,
+                            dueRepeatModes[selectedVerse.id] ?: RepeatMode.Off
+                        )
+                    },
                     onHideMore = {
                         val totalWords = verseWords.size
                         hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
                     },
-                    onRepeatToggle = { dueRepeatMode = dueRepeatMode.next() },
+                    onRepeatToggle = { selectedVerse ->
+                        val currentMode = dueRepeatModes[selectedVerse.id] ?: RepeatMode.Off
+                        dueRepeatModes = dueRepeatModes + (selectedVerse.id to currentMode.next())
+                    },
+                    onUpcomingSpeak = { selectedVerse ->
+                        speaker.speak(
+                            selectedVerse,
+                            upcomingRepeatModes[selectedVerse.id] ?: RepeatMode.Off
+                        )
+                    },
+                    onUpcomingRepeatToggle = { selectedVerse ->
+                        val currentMode = upcomingRepeatModes[selectedVerse.id] ?: RepeatMode.Off
+                        upcomingRepeatModes = upcomingRepeatModes + (selectedVerse.id to currentMode.next())
+                    },
                     onNextVerse = {
                         if (dueVerses.size > 1) {
                             val first = dueVerses.removeAt(0)
@@ -360,12 +383,9 @@ private fun MemorizeApp() {
                             dueVerses.add(upcomingVerses.removeAt(0))
                         }
                         hiddenWordCount = 0
-                        dueRepeatMode = RepeatMode.Off
                         reviewCompleted = false
                         pendingReviewCompletion = false
                     },
-                    dueRepeatMode = dueRepeatMode,
-                    dueIsLooping = speaker.isLooping && dueRepeatMode == RepeatMode.Infinite,
                     hiddenWordCount = hiddenWordCount,
                     isReviewing = isReviewing,
                     onExitReview = {
@@ -454,17 +474,20 @@ private fun ReviewScreen(
     passCount: Int,
     progressPercent: Int,
     onResetReview: () -> Unit,
-    dueVerses: List<Verse>,
-    upcomingVerses: List<Verse>,
+    dueVerses: SnapshotStateList<Verse>,
+    upcomingVerses: SnapshotStateList<Verse>,
+    dueRepeatModes: Map<String, RepeatMode>,
+    upcomingRepeatModes: Map<String, RepeatMode>,
+    activeDueLooping: Boolean,
     onMoveVerse: (Verse, VerseSection, VerseSection) -> Unit,
     hiddenWordCount: Int,
-    dueRepeatMode: RepeatMode,
-    dueIsLooping: Boolean,
     isReviewing: Boolean,
     onPlay: () -> Unit,
-    onSpeak: () -> Unit,
+    onSpeak: (Verse) -> Unit,
+    onUpcomingSpeak: (Verse) -> Unit,
     onHideMore: () -> Unit,
-    onRepeatToggle: () -> Unit,
+    onRepeatToggle: (Verse) -> Unit,
+    onUpcomingRepeatToggle: (Verse) -> Unit,
     onNextVerse: () -> Unit,
     onExitReview: () -> Unit,
     onPreviousVerse: () -> Unit,
@@ -543,12 +566,14 @@ private fun ReviewScreen(
                                 verse = dueVerse,
                                 hiddenWordCount = if (dueVerse.id == verse.id) hiddenWordCount else 0,
                                 progressPercent = if (dueVerse.id == verse.id) progressPercent else 0,
-                                onSpeak = onSpeak,
+                                onSpeak = { onSpeak(dueVerse) },
                                 onHideMore = onHideMore,
-                                onRepeatToggle = onRepeatToggle,
+                                onRepeatToggle = { onRepeatToggle(dueVerse) },
                                 onNextVerse = onNextVerse,
-                                repeatMode = dueRepeatMode,
-                                isLooping = dueIsLooping
+                                repeatMode = dueRepeatModes[dueVerse.id] ?: RepeatMode.Off,
+                                isLooping = activeDueLooping &&
+                                    dueVerse.id == verse.id &&
+                                    (dueRepeatModes[dueVerse.id] ?: RepeatMode.Off) == RepeatMode.Infinite
                             )
                         }
                     }
@@ -587,7 +612,22 @@ private fun ReviewScreen(
                                 dragState = null
                             }
                         ) {
-                            UpcomingVerseCard(upcomingVerse)
+                            DueVerseCard(
+                                verse = upcomingVerse,
+                                hiddenWordCount = 0,
+                                progressPercent = 0,
+                                onSpeak = { onUpcomingSpeak(upcomingVerse) },
+                                onHideMore = {},
+                                onRepeatToggle = { onUpcomingRepeatToggle(upcomingVerse) },
+                                onNextVerse = {
+                                    val removeIndex = upcomingVerses.indexOfFirst { it.id == upcomingVerse.id }
+                                    if (removeIndex >= 0) {
+                                        upcomingVerses.removeAt(removeIndex)
+                                    }
+                                },
+                                repeatMode = upcomingRepeatModes[upcomingVerse.id] ?: RepeatMode.Off,
+                                isLooping = false
+                            )
                         }
                     }
                 }
@@ -1164,40 +1204,6 @@ private fun DraggableVerseCard(
             }
     ) {
         content()
-    }
-}
-
-@Composable
-private fun UpcomingVerseCard(verse: Verse) {
-    Card(
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f))
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                text = verse.reference,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-            Text(
-                text = verse.text,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = "Translation: ${verse.translation}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
     }
 }
 
