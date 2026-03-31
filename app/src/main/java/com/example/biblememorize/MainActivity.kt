@@ -6,6 +6,8 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.MediaPlayer
+import android.media.MediaRecorder
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -45,6 +47,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoGraph
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.KeyboardVoice
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.MenuBook
@@ -128,7 +131,8 @@ data class Verse(
     val reference: String,
     val translation: String,
     val text: String,
-    val prompt: String
+    val prompt: String,
+    val recordedAudioPath: String? = null
 )
 
 private data class BibleBook(
@@ -374,6 +378,7 @@ private fun MemorizeApp() {
     val dueCount = filteredDueVerses.size
     val reviewScope = rememberCoroutineScope()
     val speaker = rememberVerseSpeaker(speechRate)
+    val recordedAudioPlayer = rememberVerseAudioPlayer()
     val voiceRecognizer = rememberVoiceRecognizer(
         languageTag = bibleVersionToLanguageTag(verse?.translation ?: selectedBibleVersion),
         onResult = { spokenText ->
@@ -454,6 +459,7 @@ private fun MemorizeApp() {
         if (!isReviewing) {
             repeatMode = RepeatMode.Off
             speaker.stop()
+            recordedAudioPlayer.stop()
             voiceRecognizer.stopListening()
         }
     }
@@ -504,6 +510,7 @@ private fun MemorizeApp() {
                 matchedIndices = emptySet()
                 voiceRecognizer.disableAutoRestart()
                 voiceRecognizer.stopListening()
+                recordedAudioPlayer.stop()
             }
         }
     }
@@ -556,6 +563,7 @@ private fun MemorizeApp() {
                         dueRepeatModes = dueRepeatModes,
                         upcomingRepeatModes = upcomingRepeatModes,
                         versePassCounts = versePassCounts,
+                        playingRecordedAudioPath = recordedAudioPlayer.playingPath,
                         activeDueLooping = speaker.isLooping,
                         onMoveVerse = moveVerseBetweenSections,
                         onAddVerse = { showAddVersePage = true },
@@ -567,20 +575,30 @@ private fun MemorizeApp() {
                             }
                         },
                         onSpeak = { selectedVerse ->
+                            recordedAudioPlayer.stop()
                             speaker.speak(
                                 selectedVerse,
                                 dueRepeatModes[selectedVerse.id] ?: RepeatMode.Off
                             )
+                        },
+                        onRecordedSpeak = { selectedVerse ->
+                            speaker.stop()
+                            selectedVerse.recordedAudioPath?.let { recordedAudioPlayer.play(it) }
                         },
                         onRepeatToggle = { selectedVerse ->
                             val currentMode = dueRepeatModes[selectedVerse.id] ?: RepeatMode.Off
                             dueRepeatModes = dueRepeatModes + (selectedVerse.id to currentMode.next())
                         },
                         onUpcomingSpeak = { selectedVerse ->
+                            recordedAudioPlayer.stop()
                             speaker.speak(
                                 selectedVerse,
                                 upcomingRepeatModes[selectedVerse.id] ?: RepeatMode.Off
                             )
+                        },
+                        onUpcomingRecordedSpeak = { selectedVerse ->
+                            speaker.stop()
+                            selectedVerse.recordedAudioPath?.let { recordedAudioPlayer.play(it) }
                         },
                         onUpcomingRepeatToggle = { selectedVerse ->
                             val currentMode = upcomingRepeatModes[selectedVerse.id] ?: RepeatMode.Off
@@ -717,12 +735,14 @@ private fun MemorizeApp() {
                             VerseSection.DueNow -> {
                                 val removeIndex = dueVerses.indexOfFirst { it.id == deleteState.verse.id }
                                 if (removeIndex >= 0) {
+                                    dueVerses[removeIndex].recordedAudioPath?.let { deleteAudioRecordingIfExists(it) }
                                     dueVerses.removeAt(removeIndex)
                                 }
                             }
                             VerseSection.Upcoming -> {
                                 val removeIndex = upcomingVerses.indexOfFirst { it.id == deleteState.verse.id }
                                 if (removeIndex >= 0) {
+                                    upcomingVerses[removeIndex].recordedAudioPath?.let { deleteAudioRecordingIfExists(it) }
                                     upcomingVerses.removeAt(removeIndex)
                                 }
                             }
@@ -779,6 +799,7 @@ private fun ReviewScreen(
     dueRepeatModes: Map<String, RepeatMode>,
     upcomingRepeatModes: Map<String, RepeatMode>,
     versePassCounts: Map<String, Int>,
+    playingRecordedAudioPath: String?,
     activeDueLooping: Boolean,
     onMoveVerse: (Verse, VerseSection, VerseSection) -> Unit,
     onAddVerse: () -> Unit,
@@ -786,7 +807,9 @@ private fun ReviewScreen(
     isReviewing: Boolean,
     onPlay: () -> Unit,
     onSpeak: (Verse) -> Unit,
+    onRecordedSpeak: (Verse) -> Unit,
     onUpcomingSpeak: (Verse) -> Unit,
+    onUpcomingRecordedSpeak: (Verse) -> Unit,
     onRepeatToggle: (Verse) -> Unit,
     onUpcomingRepeatToggle: (Verse) -> Unit,
     onDeleteDueVerse: (Verse) -> Unit,
@@ -873,6 +896,9 @@ private fun ReviewScreen(
                                 hiddenWordCount = 0,
                                 progressPercent = if (dueVerse.id == verse?.id) currentVerseProgressPercent else 0,
                                 onEdit = { onEditDueVerse(dueVerse) },
+                                onRecordedSpeak = { onRecordedSpeak(dueVerse) },
+                                hasRecordedAudio = !dueVerse.recordedAudioPath.isNullOrBlank(),
+                                isPlayingRecordedAudio = dueVerse.recordedAudioPath == playingRecordedAudioPath,
                                 onSpeak = { onSpeak(dueVerse) },
                                 onRepeatToggle = { onRepeatToggle(dueVerse) },
                                 onNextVerse = { onDeleteDueVerse(dueVerse) },
@@ -924,6 +950,9 @@ private fun ReviewScreen(
                                 hiddenWordCount = 0,
                                 progressPercent = 0,
                                 onEdit = { onEditUpcomingVerse(upcomingVerse) },
+                                onRecordedSpeak = { onUpcomingRecordedSpeak(upcomingVerse) },
+                                hasRecordedAudio = !upcomingVerse.recordedAudioPath.isNullOrBlank(),
+                                isPlayingRecordedAudio = upcomingVerse.recordedAudioPath == playingRecordedAudioPath,
                                 onSpeak = { onUpcomingSpeak(upcomingVerse) },
                                 onRepeatToggle = { onUpcomingRepeatToggle(upcomingVerse) },
                                 onNextVerse = { onDeleteUpcomingVerse(upcomingVerse) },
@@ -1114,10 +1143,14 @@ private fun AddVerseScreen(
     var difficulty by remember { mutableStateOf(VerseDifficulty.Medium) }
     var verseText by remember { mutableStateOf("") }
     var dictatedPrefix by remember { mutableStateOf("") }
+    var recordedAudioPath by remember { mutableStateOf<String?>(null) }
+    var addVoiceLevel by remember { mutableStateOf(0f) }
+    var addVoiceStatus by remember { mutableStateOf("") }
     val maxVerse = selectedBook.knownVerseCounts[selectedChapter] ?: 50
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val addAudioRecorder = rememberVerseAudioRecorder()
     val addVoiceRecognizer = rememberVoiceRecognizer(
         languageTag = bibleVersionToLanguageTag(selectedBibleVersion),
         onResult = { spokenText ->
@@ -1128,15 +1161,37 @@ private fun AddVerseScreen(
         onPartialResult = { spokenText ->
             verseText = mergeRecognizedText(dictatedPrefix, spokenText)
         },
-        onError = {},
-        onListeningStateChanged = { _ -> },
-        onLevelChanged = {}
+        onError = {
+            addVoiceStatus = if (it.isBlank()) addVoiceStatus else it
+            addVoiceLevel = 0f
+        },
+        onListeningStateChanged = { listening ->
+            if (listening) {
+                addVoiceStatus = if (addAudioRecorder.isRecording) {
+                    "Listening and recording..."
+                } else {
+                    "Listening..."
+                }
+            } else if (addVoiceStatus == "Listening..." || addVoiceStatus == "Listening and recording...") {
+                addVoiceStatus = ""
+            }
+        },
+        onLevelChanged = { addVoiceLevel = it }
     )
     val addVoicePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
+            recordedAudioPath?.let { deleteAudioRecordingIfExists(it) }
+            recordedAudioPath = createVerseRecordingPath(context)
+            val recordingStarted = recordedAudioPath?.let { addAudioRecorder.startRecording(it) } == true
+            if (!recordingStarted) {
+                recordedAudioPath = null
+                addVoiceStatus = "Voice text input started. Audio recording is unavailable on this device."
+            }
             addVoiceRecognizer.startListening()
+        } else {
+            addVoiceStatus = "Microphone permission is required."
         }
     }
 
@@ -1168,7 +1223,17 @@ private fun AddVerseScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                RoundedTextButton("Cancel", onCancel)
+                RoundedTextButton(
+                    "Cancel",
+                    onClick = {
+                        addVoiceStatus = ""
+                        addVoiceLevel = 0f
+                        addAudioRecorder.stopRecording()
+                        addVoiceRecognizer.stopListening()
+                        recordedAudioPath?.let { deleteAudioRecordingIfExists(it) }
+                        onCancel()
+                    }
+                )
                 RoundedTextButton(
                     text = "Save",
                     onClick = {
@@ -1183,6 +1248,9 @@ private fun AddVerseScreen(
                                 append(selectedVerseEnd)
                             }
                         }
+                        addVoiceStatus = ""
+                        addVoiceLevel = 0f
+                        addAudioRecorder.stopRecording()
                         addVoiceRecognizer.stopListening()
                         onSave(
                             Verse(
@@ -1190,7 +1258,8 @@ private fun AddVerseScreen(
                                 reference = reference,
                                 translation = selectedBibleVersion,
                                 text = verseText,
-                                prompt = if (tags.isBlank()) difficulty.label else tags
+                                prompt = if (tags.isBlank()) difficulty.label else tags,
+                                recordedAudioPath = recordedAudioPath?.takeIf { java.io.File(it).exists() }
                             ),
                             selectedType
                         )
@@ -1312,10 +1381,17 @@ private fun AddVerseScreen(
                         SmallIconButton(
                             icon = Icons.Filled.KeyboardVoice,
                             label = stringResource(R.string.start_voice_input),
-                            tint = if (addVoiceRecognizer.isListening) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
+                            tint = if (addVoiceRecognizer.isListening || addAudioRecorder.isRecording) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onBackground
+                            },
                             onClick = {
-                                if (addVoiceRecognizer.isListening) {
+                                if (addVoiceRecognizer.isListening || addAudioRecorder.isRecording) {
                                     dictatedPrefix = verseText.trim()
+                                    addVoiceStatus = ""
+                                    addVoiceLevel = 0f
+                                    addAudioRecorder.stopRecording()
                                     addVoiceRecognizer.stopListening()
                                 } else if (
                                     ContextCompat.checkSelfPermission(
@@ -1324,12 +1400,34 @@ private fun AddVerseScreen(
                                     ) == PackageManager.PERMISSION_GRANTED
                                 ) {
                                     dictatedPrefix = verseText.trim()
+                                    recordedAudioPath?.let { deleteAudioRecordingIfExists(it) }
+                                    recordedAudioPath = createVerseRecordingPath(context)
+                                    val recordingStarted = recordedAudioPath?.let { addAudioRecorder.startRecording(it) } == true
+                                    if (!recordingStarted) {
+                                        recordedAudioPath = null
+                                        addVoiceStatus = "Voice text input started. Audio recording is unavailable on this device."
+                                    } else {
+                                        addVoiceStatus = "Listening and recording..."
+                                    }
                                     addVoiceRecognizer.startListening()
                                 } else {
                                     dictatedPrefix = verseText.trim()
                                     addVoicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                 }
                             }
+                        )
+                    }
+                    if (addVoiceRecognizer.isListening || addAudioRecorder.isRecording) {
+                        VoiceLevelIndicator(
+                            level = addVoiceLevel,
+                            active = addVoiceRecognizer.isListening
+                        )
+                    }
+                    if (addVoiceStatus.isNotBlank()) {
+                        Text(
+                            text = addVoiceStatus,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     TextField(
@@ -2133,6 +2231,9 @@ private fun DueVerseCard(
     hiddenWordCount: Int,
     progressPercent: Int,
     onEdit: () -> Unit,
+    onRecordedSpeak: () -> Unit,
+    hasRecordedAudio: Boolean,
+    isPlayingRecordedAudio: Boolean,
     onSpeak: () -> Unit,
     onRepeatToggle: () -> Unit,
     onNextVerse: () -> Unit,
@@ -2183,6 +2284,9 @@ private fun DueVerseCard(
                 }
                 ActionRow(
                     onEdit = onEdit,
+                    onRecordedSpeak = onRecordedSpeak,
+                    hasRecordedAudio = hasRecordedAudio,
+                    isPlayingRecordedAudio = isPlayingRecordedAudio,
                     onSpeak = onSpeak,
                     onRepeat = onRepeatToggle,
                     onNextVerse = onNextVerse,
@@ -2501,6 +2605,9 @@ private fun ReviewVerseText(
 @Composable
 private fun ActionRow(
     onEdit: () -> Unit,
+    onRecordedSpeak: () -> Unit,
+    hasRecordedAudio: Boolean,
+    isPlayingRecordedAudio: Boolean,
     onSpeak: () -> Unit,
     onRepeat: () -> Unit,
     onNextVerse: () -> Unit,
@@ -2513,6 +2620,19 @@ private fun ActionRow(
             label = "Edit verse",
             tint = MaterialTheme.colorScheme.onBackground,
             onClick = onEdit
+        )
+        SmallIconButton(
+            icon = Icons.Filled.GraphicEq,
+            label = "Play recorded verse",
+            tint = if (!hasRecordedAudio) {
+                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+            } else if (isPlayingRecordedAudio) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onBackground
+            },
+            enabled = hasRecordedAudio,
+            onClick = onRecordedSpeak
         )
         SmallIconButton(
             icon = Icons.Filled.VolumeUp,
@@ -2539,10 +2659,12 @@ private fun SmallIconButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     tint: Color,
+    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     IconButton(
         onClick = onClick,
+        enabled = enabled,
         modifier = Modifier.size(30.dp)
     ) {
         Icon(
@@ -2701,7 +2823,8 @@ private fun String?.toVerseList(): List<Verse> {
                         reference = item.optString("reference"),
                         translation = item.optString("translation"),
                         text = item.optString("text"),
-                        prompt = item.optString("prompt")
+                        prompt = item.optString("prompt"),
+                        recordedAudioPath = item.optString("recordedAudioPath").takeIf { it.isNotBlank() }
                     )
                 )
             }
@@ -2724,6 +2847,7 @@ private fun List<Verse>.toJson(): String =
                     put("translation", verse.translation)
                     put("text", verse.text)
                     put("prompt", verse.prompt)
+                    put("recordedAudioPath", verse.recordedAudioPath ?: "")
                 }
             )
         }
@@ -2834,6 +2958,20 @@ private fun moveLastMatchingVerse(
     }
 }
 
+private fun createVerseRecordingPath(context: Context): String {
+    val directory = java.io.File(context.filesDir, "verse_recordings").apply { mkdirs() }
+    return java.io.File(directory, "verse-${System.currentTimeMillis()}.m4a").absolutePath
+}
+
+private fun deleteAudioRecordingIfExists(path: String) {
+    runCatching {
+        val file = java.io.File(path)
+        if (file.exists()) {
+            file.delete()
+        }
+    }
+}
+
 private fun mergeRecognizedText(existing: String, incoming: String): String {
     val current = existing.trim()
     val next = incoming.trim()
@@ -2846,6 +2984,18 @@ private fun mergeRecognizedText(existing: String, incoming: String): String {
 
     return "$current $next"
 }
+
+private data class VerseAudioRecorderController(
+    val startRecording: (String) -> Boolean,
+    val stopRecording: () -> Unit,
+    val isRecording: Boolean
+)
+
+private data class VerseAudioPlayerController(
+    val play: (String) -> Unit,
+    val stop: () -> Unit,
+    val playingPath: String?
+)
 
 private data class VoiceRecognizerController(
     val startListening: () -> Unit,
@@ -3012,6 +3162,109 @@ private fun rememberVoiceRecognizer(
                 shouldKeepListening = false
             },
             isListening = isListening
+        )
+    }
+}
+
+@Composable
+private fun rememberVerseAudioRecorder(): VerseAudioRecorderController {
+    var mediaRecorder by remember { mutableStateOf<MediaRecorder?>(null) }
+    var isRecording by remember { mutableStateOf(false) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            runCatching { mediaRecorder?.stop() }
+            runCatching { mediaRecorder?.release() }
+            mediaRecorder = null
+            isRecording = false
+        }
+    }
+
+    return remember(mediaRecorder, isRecording) {
+        VerseAudioRecorderController(
+            startRecording = { outputPath ->
+                runCatching {
+                    mediaRecorder?.release()
+                    mediaRecorder = MediaRecorder().apply {
+                        setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
+                        setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                        setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                        setOutputFile(outputPath)
+                        prepare()
+                        start()
+                    }
+                    isRecording = true
+                    true
+                }.getOrElse {
+                    runCatching { mediaRecorder?.release() }
+                    mediaRecorder = null
+                    isRecording = false
+                    false
+                }
+            },
+            stopRecording = {
+                runCatching { mediaRecorder?.stop() }
+                runCatching { mediaRecorder?.release() }
+                mediaRecorder = null
+                isRecording = false
+            },
+            isRecording = isRecording
+        )
+    }
+}
+
+@Composable
+private fun rememberVerseAudioPlayer(): VerseAudioPlayerController {
+    var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    var playingPath by remember { mutableStateOf<String?>(null) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            runCatching { mediaPlayer?.stop() }
+            runCatching { mediaPlayer?.release() }
+            mediaPlayer = null
+            playingPath = null
+        }
+    }
+
+    return remember(mediaPlayer, playingPath) {
+        VerseAudioPlayerController(
+            play = { path ->
+                if (path == playingPath) {
+                    runCatching { mediaPlayer?.stop() }
+                    runCatching { mediaPlayer?.release() }
+                    mediaPlayer = null
+                    playingPath = null
+                } else {
+                    runCatching { mediaPlayer?.stop() }
+                    runCatching { mediaPlayer?.release() }
+                    mediaPlayer = null
+                    val player = MediaPlayer()
+                    runCatching {
+                        player.setDataSource(path)
+                        player.setOnCompletionListener {
+                            runCatching { it.release() }
+                            mediaPlayer = null
+                            playingPath = null
+                        }
+                        player.prepare()
+                        player.start()
+                        mediaPlayer = player
+                        playingPath = path
+                    }.getOrElse {
+                        runCatching { player.release() }
+                        mediaPlayer = null
+                        playingPath = null
+                    }
+                }
+            },
+            stop = {
+                runCatching { mediaPlayer?.stop() }
+                runCatching { mediaPlayer?.release() }
+                mediaPlayer = null
+                playingPath = null
+            },
+            playingPath = playingPath
         )
     }
 }
