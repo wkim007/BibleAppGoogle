@@ -326,6 +326,15 @@ private data class PendingEdit(
     val section: VerseSection
 )
 
+private data class RecentReviewEntry(
+    val verseId: String,
+    val reference: String,
+    val translation: String,
+    val reviewLevel: String,
+    val dateKey: String,
+    val durationSeconds: Int
+)
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -366,9 +375,11 @@ private fun MemorizeApp() {
     var pendingDelete by remember { mutableStateOf<PendingDelete?>(null) }
     var pendingEdit by remember { mutableStateOf<PendingEdit?>(null) }
     var voiceLevel by remember { mutableStateOf(0f) }
+    var reviewSessionStartedAtMillis by remember { mutableStateOf<Long?>(null) }
     val persistedVerseState = remember(context) { loadPersistedVerseState(context) }
     var versePassCounts by remember(context) { mutableStateOf(loadPersistedVersePassCounts(context)) }
     var dailyProgressHistory by remember(context) { mutableStateOf(loadPersistedDailyProgressHistory(context)) }
+    var recentReviewEntries by remember(context) { mutableStateOf(loadPersistedRecentReviewEntries(context)) }
     val dueVerses = remember {
         mutableStateListOf(*persistedVerseState.first.toTypedArray())
     }
@@ -383,6 +394,7 @@ private fun MemorizeApp() {
     val memorizedCount = filteredVerseIds.count { verseId -> (versePassCounts[verseId] ?: 0) >= 3 }
     val completedDueCount = filteredDueVerses.count { dueVerse -> (versePassCounts[dueVerse.id] ?: 0) > 0 }
     val versionDailyProgress = dailyProgressHistory[selectedBibleVersion].orEmpty()
+    val recentReviews = recentReviewEntries.filter { it.translation == selectedBibleVersion }
     val streakDays = computeStreakDays(versionDailyProgress.keys)
     val masteryPercent = if (versionDailyProgress.isEmpty()) {
         0
@@ -426,6 +438,7 @@ private fun MemorizeApp() {
         showCompletionDialog = false
         pendingReviewCompletion = false
         voiceLevel = 0f
+        reviewSessionStartedAtMillis = null
         repeatMode = RepeatMode.Off
         voiceRecognizer.disableAutoRestart()
         voiceRecognizer.stopListening()
@@ -501,12 +514,25 @@ private fun MemorizeApp() {
                 dailyProgressHistory = dailyProgressHistory + (
                     currentVerse.translation to (versionHistory + (currentDate to updatedProgressPercent))
                 )
+                val durationSeconds = (((System.currentTimeMillis() - (reviewSessionStartedAtMillis ?: System.currentTimeMillis())) / 1000L).toInt())
+                    .coerceAtLeast(1)
+                recentReviewEntries = listOf(
+                    RecentReviewEntry(
+                        verseId = currentVerse.id,
+                        reference = currentVerse.reference,
+                        translation = currentVerse.translation,
+                        reviewLevel = reviewLevelDisplayLabel(reviewLevel),
+                        dateKey = currentDate,
+                        durationSeconds = durationSeconds
+                    )
+                ) + recentReviewEntries
             }
             recognizedText = ""
             voiceRecognizer.disableAutoRestart()
             voiceRecognizer.stopListening()
             showCompletionDialog = true
             pendingReviewCompletion = false
+            reviewSessionStartedAtMillis = null
         }
     }
 
@@ -526,6 +552,23 @@ private fun MemorizeApp() {
     LaunchedEffect(context) {
         snapshotFlow { dailyProgressHistory }
             .collectLatest { savePersistedDailyProgressHistory(context, it) }
+    }
+
+    LaunchedEffect(context) {
+        snapshotFlow { recentReviewEntries }
+            .collectLatest { savePersistedRecentReviewEntries(context, it) }
+    }
+
+    LaunchedEffect(selectedTab, selectedBibleVersion, displayProgressPercent) {
+        if (selectedTab == BottomTab.Progress) {
+            val currentDate = currentDateKey()
+            val versionHistory = dailyProgressHistory[selectedBibleVersion].orEmpty()
+            if (versionHistory[currentDate] != displayProgressPercent) {
+                dailyProgressHistory = dailyProgressHistory + (
+                    selectedBibleVersion to (versionHistory + (currentDate to displayProgressPercent))
+                )
+            }
+        }
     }
 
     val moveVerseBetweenSections: (Verse, VerseSection, VerseSection) -> Unit = { draggedVerse, from, to ->
@@ -609,6 +652,7 @@ private fun MemorizeApp() {
                                 val totalWords = verseWords.size
                                 hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
                                 isReviewing = true
+                                reviewSessionStartedAtMillis = System.currentTimeMillis()
                             }
                         },
                         onSpeak = { selectedVerse ->
@@ -682,11 +726,13 @@ private fun MemorizeApp() {
                             hiddenWordCount = 0
                             reviewCompleted = false
                             pendingReviewCompletion = false
+                            reviewSessionStartedAtMillis = System.currentTimeMillis()
                         },
                         hiddenWordCount = hiddenWordCount,
                         isReviewing = isReviewing,
                         onExitReview = {
                             isReviewing = false
+                            reviewSessionStartedAtMillis = null
                             speaker.stop()
                         },
                         onPreviousVerse = {
@@ -703,6 +749,7 @@ private fun MemorizeApp() {
                             hiddenWordCount = 0
                             reviewCompleted = false
                             pendingReviewCompletion = false
+                            reviewSessionStartedAtMillis = System.currentTimeMillis()
                         },
                         reviewContent = {
                             ReviewPracticeCard(
@@ -757,7 +804,8 @@ private fun MemorizeApp() {
                         memorizedCount = memorizedCount,
                         reviewsCount = passCount,
                         streakDays = streakDays,
-                        masteryPercent = masteryPercent
+                        masteryPercent = masteryPercent,
+                        recentReviews = recentReviews
                     )
                 }
                 BottomTab.Settings -> {
@@ -792,9 +840,11 @@ private fun MemorizeApp() {
                         pendingReviewCompletion = false
                         showReviewAnswer = false
                         voiceLevel = 0f
+                        reviewSessionStartedAtMillis = null
                         repeatMode = RepeatMode.Off
                         versePassCounts = emptyMap()
                         dailyProgressHistory = emptyMap()
+                        recentReviewEntries = emptyList()
                         speaker.stop()
                         recordedAudioPlayer.stop()
                         voiceRecognizer.disableAutoRestart()
@@ -1140,7 +1190,8 @@ private fun ProgressScreen(
     memorizedCount: Int,
     reviewsCount: Int,
     streakDays: Int,
-    masteryPercent: Int
+    masteryPercent: Int,
+    recentReviews: List<RecentReviewEntry>
 ) {
     Column(
         modifier = Modifier
@@ -1194,6 +1245,76 @@ private fun ProgressScreen(
                 label = "Mastery",
                 value = "${masteryPercent}%"
             )
+        }
+        Text(
+            text = "Recent Reviews",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        if (recentReviews.isEmpty()) {
+            Card(
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f))
+            ) {
+                Text(
+                    text = "No recent reviews yet.",
+                    modifier = Modifier.padding(20.dp),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            recentReviews.take(10).forEach { review ->
+                RecentReviewCard(review)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecentReviewCard(review: RecentReviewEntry) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = localizedReference(review.reference, review.translation),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    fontFamily = bibleVersionFontFamily(review.translation)
+                )
+                Text(
+                    text = formatDisplayDate(review.dateKey),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = review.reviewLevel,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                Text(
+                    text = "${review.durationSeconds}s",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }
@@ -3100,6 +3221,7 @@ private const val DUE_VERSES_KEY = "due_verses"
 private const val UPCOMING_VERSES_KEY = "upcoming_verses"
 private const val VERSE_PASS_COUNTS_KEY = "verse_pass_counts"
 private const val DAILY_PROGRESS_HISTORY_KEY = "daily_progress_history"
+private const val RECENT_REVIEWS_KEY = "recent_reviews"
 
 private fun loadPersistedVerseState(context: android.content.Context): Pair<List<Verse>, List<Verse>> {
     val preferences = context.getSharedPreferences(VERSE_PREFS_NAME, android.content.Context.MODE_PRIVATE)
@@ -3198,6 +3320,60 @@ private fun savePersistedDailyProgressHistory(
     }
     preferences.edit()
         .putString(DAILY_PROGRESS_HISTORY_KEY, rootObject.toString())
+        .apply()
+}
+
+private fun loadPersistedRecentReviewEntries(context: android.content.Context): List<RecentReviewEntry> {
+    val preferences = context.getSharedPreferences(VERSE_PREFS_NAME, android.content.Context.MODE_PRIVATE)
+    val rawValue = preferences.getString(RECENT_REVIEWS_KEY, null).orEmpty()
+    if (rawValue.isBlank()) return emptyList()
+
+    return runCatching {
+        val jsonArray = JSONArray(rawValue)
+        buildList(jsonArray.length()) {
+            for (index in 0 until jsonArray.length()) {
+                val item = jsonArray.optJSONObject(index) ?: continue
+                add(
+                    RecentReviewEntry(
+                        verseId = item.optString("verseId"),
+                        reference = item.optString("reference"),
+                        translation = item.optString("translation"),
+                        reviewLevel = item.optString("reviewLevel"),
+                        dateKey = item.optString("dateKey"),
+                        durationSeconds = item.optInt("durationSeconds", 0).coerceAtLeast(0)
+                    )
+                )
+            }
+        }.filter { entry ->
+            entry.verseId.isNotBlank() &&
+                entry.reference.isNotBlank() &&
+                entry.translation.isNotBlank() &&
+                entry.dateKey.isNotBlank()
+        }
+    }.getOrDefault(emptyList())
+}
+
+private fun savePersistedRecentReviewEntries(
+    context: android.content.Context,
+    entries: List<RecentReviewEntry>
+) {
+    val preferences = context.getSharedPreferences(VERSE_PREFS_NAME, android.content.Context.MODE_PRIVATE)
+    val jsonArray = JSONArray().apply {
+        entries.take(50).forEach { entry ->
+            put(
+                JSONObject().apply {
+                    put("verseId", entry.verseId)
+                    put("reference", entry.reference)
+                    put("translation", entry.translation)
+                    put("reviewLevel", entry.reviewLevel)
+                    put("dateKey", entry.dateKey)
+                    put("durationSeconds", entry.durationSeconds)
+                }
+            )
+        }
+    }
+    preferences.edit()
+        .putString(RECENT_REVIEWS_KEY, jsonArray.toString())
         .apply()
 }
 
@@ -3366,6 +3542,19 @@ private fun deleteAudioRecordingIfExists(path: String) {
 
 private fun currentDateKey(): String =
     SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+
+private fun reviewLevelDisplayLabel(reviewLevel: ReviewLevel): String = when (reviewLevel) {
+    ReviewLevel.Standard -> "Easy"
+    ReviewLevel.Medium -> "Medium"
+    ReviewLevel.Hard -> "Hard"
+}
+
+private fun formatDisplayDate(dateKey: String): String {
+    val parser = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+    val formatter = SimpleDateFormat("MMMM d, yyyy", Locale.US)
+    val parsedDate = runCatching { parser.parse(dateKey) }.getOrNull() ?: return dateKey
+    return formatter.format(parsedDate)
+}
 
 private fun computeStreakDays(recordedDates: Set<String>): Int {
     if (recordedDates.isEmpty()) return 0
