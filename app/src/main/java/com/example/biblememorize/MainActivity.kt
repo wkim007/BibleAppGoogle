@@ -361,6 +361,7 @@ private fun MemorizeApp() {
     var matchedIndices by remember { mutableStateOf(setOf<Int>()) }
     var reviewCompleted by remember { mutableStateOf(false) }
     var showCompletionDialog by remember { mutableStateOf(false) }
+    var showResetProgressDialog by remember { mutableStateOf(false) }
     var pendingReviewCompletion by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<PendingDelete?>(null) }
     var pendingEdit by remember { mutableStateOf<PendingEdit?>(null) }
@@ -769,7 +770,8 @@ private fun MemorizeApp() {
                     reviewLevel = reviewLevel,
                     onReviewLevelChange = { reviewLevel = it },
                     keepScreenAwake = keepScreenAwake,
-                    onKeepScreenAwakeChange = { keepScreenAwake = it }
+                    onKeepScreenAwakeChange = { keepScreenAwake = it },
+                    onResetProgress = { showResetProgressDialog = true }
                 )
             }
         }
@@ -777,6 +779,28 @@ private fun MemorizeApp() {
             if (showCompletionDialog) {
                 CompletionDialog(
                     onDismiss = { showCompletionDialog = false }
+                )
+            }
+            if (showResetProgressDialog) {
+                ResetProgressDialog(
+                    onConfirm = {
+                        showResetProgressDialog = false
+                        hiddenWordCount = 0
+                        recognizedText = ""
+                        matchedIndices = emptySet()
+                        reviewCompleted = false
+                        pendingReviewCompletion = false
+                        showReviewAnswer = false
+                        voiceLevel = 0f
+                        repeatMode = RepeatMode.Off
+                        versePassCounts = emptyMap()
+                        dailyProgressHistory = emptyMap()
+                        speaker.stop()
+                        recordedAudioPlayer.stop()
+                        voiceRecognizer.disableAutoRestart()
+                        voiceRecognizer.stopListening()
+                    },
+                    onDismiss = { showResetProgressDialog = false }
                 )
             }
             pendingDelete?.let { deleteState ->
@@ -1983,7 +2007,8 @@ private fun SettingsScreen(
     reviewLevel: ReviewLevel,
     onReviewLevelChange: (ReviewLevel) -> Unit,
     keepScreenAwake: Boolean,
-    onKeepScreenAwakeChange: (Boolean) -> Unit
+    onKeepScreenAwakeChange: (Boolean) -> Unit,
+    onResetProgress: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
 
@@ -2104,6 +2129,46 @@ private fun SettingsScreen(
             keepScreenAwake = keepScreenAwake,
             onKeepScreenAwakeChange = onKeepScreenAwakeChange
         )
+        Text(
+            text = "Progress",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        ProgressSettingsCard(onResetProgress = onResetProgress)
+    }
+}
+
+@Composable
+private fun ProgressSettingsCard(onResetProgress: () -> Unit) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text(
+                text = "Reset Progress",
+                style = MaterialTheme.typography.titleMedium,
+                color = Color(0xFFFF5D5D),
+                modifier = Modifier.clickable(onClick = onResetProgress)
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(Color.White.copy(alpha = 0.10f))
+            )
+            Text(
+                text = "This clears review history, mastery, streaks, and passed state, but keeps your verses.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 
@@ -2679,6 +2744,46 @@ private fun DeleteVerseDialog(
         text = {
             Text(
                 text = "Delete $verseReference?",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        containerColor = MaterialTheme.colorScheme.surface,
+        titleContentColor = MaterialTheme.colorScheme.onBackground,
+        textContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}
+
+@Composable
+private fun ResetProgressDialog(
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            Button(onClick = onConfirm) {
+                Text("OK")
+            }
+        },
+        dismissButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Text("Cancel")
+            }
+        },
+        title = {
+            Text(
+                text = "Reset Progress",
+                color = MaterialTheme.colorScheme.onBackground
+            )
+        },
+        text = {
+            Text(
+                text = "Reset all progress data for this app?",
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         },
