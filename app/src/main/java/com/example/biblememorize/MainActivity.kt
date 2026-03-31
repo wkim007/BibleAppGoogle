@@ -182,6 +182,7 @@ private fun MemorizeApp() {
     var matchedIndices by remember { mutableStateOf(setOf<Int>()) }
     var reviewCompleted by remember { mutableStateOf(false) }
     var showCompletionDialog by remember { mutableStateOf(false) }
+    var pendingReviewCompletion by remember { mutableStateOf(false) }
     var voiceLevel by remember { mutableStateOf(0f) }
     val verse = starterVerses[verseIndex]
     val verseWords = remember(verse.reference) { verse.text.split(" ") }
@@ -193,11 +194,15 @@ private fun MemorizeApp() {
         onResult = { spokenText ->
             val mergedText = mergeRecognizedText(recognizedText, spokenText)
             recognizedText = mergedText
-            matchedIndices = matchRecognizedWords(
+            val newMatchedIndices = matchRecognizedWords(
                 verseWords = verseWords,
                 hiddenIndices = reviewHiddenIndices,
                 recognizedText = mergedText
             )
+            matchedIndices = newMatchedIndices
+            if (reviewHiddenIndices.isNotEmpty() && reviewHiddenIndices.all { it in newMatchedIndices }) {
+                pendingReviewCompletion = true
+            }
         },
         onError = {
             voiceLevel = 0f
@@ -211,6 +216,7 @@ private fun MemorizeApp() {
         matchedIndices = emptySet()
         reviewCompleted = false
         showCompletionDialog = false
+        pendingReviewCompletion = false
         voiceLevel = 0f
         repeatMode = RepeatMode.Off
         voiceRecognizer.disableAutoRestart()
@@ -239,6 +245,7 @@ private fun MemorizeApp() {
         matchedIndices = emptySet()
         reviewCompleted = false
         showCompletionDialog = false
+        pendingReviewCompletion = false
         voiceLevel = 0f
         if (!isReviewing) {
             repeatMode = RepeatMode.Off
@@ -247,14 +254,15 @@ private fun MemorizeApp() {
         }
     }
 
-    LaunchedEffect(reviewFullyMatched) {
-        if (reviewFullyMatched && !reviewCompleted) {
+    LaunchedEffect(pendingReviewCompletion) {
+        if (pendingReviewCompletion && !reviewCompleted) {
             reviewCompleted = true
             passCount += 1
             recognizedText = ""
             voiceRecognizer.disableAutoRestart()
             voiceRecognizer.stopListening()
             showCompletionDialog = true
+            pendingReviewCompletion = false
         }
     }
 
@@ -297,6 +305,7 @@ private fun MemorizeApp() {
                         hiddenWordCount = 0
                         dueRepeatMode = RepeatMode.Off
                         reviewCompleted = false
+                        pendingReviewCompletion = false
                     },
                     dueRepeatMode = dueRepeatMode,
                     dueIsLooping = speaker.isLooping && dueRepeatMode == RepeatMode.Infinite,
@@ -310,6 +319,7 @@ private fun MemorizeApp() {
                         verseIndex = if (verseIndex == 0) starterVerses.lastIndex else verseIndex - 1
                         hiddenWordCount = 0
                         reviewCompleted = false
+                        pendingReviewCompletion = false
                     },
                     reviewContent = {
                         ReviewPracticeCard(
@@ -317,6 +327,7 @@ private fun MemorizeApp() {
                             verseWords = verseWords,
                             hiddenIndices = reviewHiddenIndices,
                             matchedIndices = matchedIndices,
+                            isCompleted = reviewCompleted,
                             showAnswer = showReviewAnswer,
                             repeatMode = repeatMode,
                             isLooping = speaker.isLooping,
@@ -1038,6 +1049,7 @@ private fun ReviewPracticeCard(
     verseWords: List<String>,
     hiddenIndices: Set<Int>,
     matchedIndices: Set<Int>,
+    isCompleted: Boolean,
     showAnswer: Boolean,
     repeatMode: RepeatMode,
     isLooping: Boolean,
@@ -1048,7 +1060,7 @@ private fun ReviewPracticeCard(
     onRepeatClick: () -> Unit,
     onMicClick: () -> Unit
 ) {
-    val fullMatch = hiddenIndices.isNotEmpty() && hiddenIndices.all { it in matchedIndices }
+    val fullMatch = isCompleted || (hiddenIndices.isNotEmpty() && hiddenIndices.all { it in matchedIndices })
 
     Card(
         shape = RoundedCornerShape(22.dp),
