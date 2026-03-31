@@ -1527,9 +1527,14 @@ private fun EditVerseScreen(
     var selectedType by remember { mutableStateOf(initialType) }
     var verseText by remember { mutableStateOf(verse.text) }
     var dictatedPrefix by remember { mutableStateOf(verse.text.trim()) }
+    var editedRecordedAudioPath by remember { mutableStateOf(verse.recordedAudioPath) }
+    var pendingMicAction by remember { mutableStateOf<AddVerseMicAction?>(null) }
+    var editTranscribeLevel by remember { mutableStateOf(0f) }
+    var editVoiceStatus by remember { mutableStateOf("") }
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val editAudioRecorder = rememberVerseAudioRecorder()
     val editVoiceRecognizer = rememberVoiceRecognizer(
         languageTag = bibleVersionToLanguageTag(selectedBibleVersion),
         onResult = { spokenText ->
@@ -1540,16 +1545,49 @@ private fun EditVerseScreen(
         onPartialResult = { spokenText ->
             verseText = mergeRecognizedText(dictatedPrefix, spokenText)
         },
-        onError = {},
-        onListeningStateChanged = { _ -> },
-        onLevelChanged = {}
+        onError = { message ->
+            if (message.contains("Microphone permission", ignoreCase = true)) {
+                editVoiceStatus = message
+            }
+            editTranscribeLevel = 0f
+        },
+        onListeningStateChanged = { listening ->
+            if (listening) {
+                editVoiceStatus = "Transcribing voice..."
+            } else if (pendingMicAction == AddVerseMicAction.Transcribe || editVoiceStatus == "Transcribing voice...") {
+                pendingMicAction = null
+                editTranscribeLevel = 0f
+            }
+        },
+        onLevelChanged = { editTranscribeLevel = it }
     )
     val editVoicePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            editVoiceRecognizer.startListening()
+            when (pendingMicAction) {
+                AddVerseMicAction.Transcribe -> {
+                    dictatedPrefix = verseText.trim()
+                    editVoiceStatus = "Starting voice input..."
+                    editVoiceRecognizer.startListening()
+                }
+                AddVerseMicAction.Record -> {
+                    if (editedRecordedAudioPath != verse.recordedAudioPath) {
+                        editedRecordedAudioPath?.let { deleteAudioRecordingIfExists(it) }
+                    }
+                    editedRecordedAudioPath = createVerseRecordingPath(context)
+                    val recordingStarted = editedRecordedAudioPath?.let { editAudioRecorder.startRecording(it) } == true
+                    editVoiceStatus = if (recordingStarted) {
+                        "Recording voice..."
+                    } else {
+                        editedRecordedAudioPath = verse.recordedAudioPath
+                        "Audio recording is unavailable on this device."
+                    }
+                }
+                null -> Unit
+            }
         }
+        pendingMicAction = null
     }
 
     Surface(
@@ -1576,15 +1614,36 @@ private fun EditVerseScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                RoundedTextButton("Cancel", onCancel)
+                RoundedTextButton(
+                    "Cancel",
+                    onClick = {
+                        pendingMicAction = null
+                        editVoiceStatus = ""
+                        editTranscribeLevel = 0f
+                        editAudioRecorder.stopRecording()
+                        editVoiceRecognizer.stopListening()
+                        if (editedRecordedAudioPath != verse.recordedAudioPath) {
+                            editedRecordedAudioPath?.let { deleteAudioRecordingIfExists(it) }
+                        }
+                        onCancel()
+                    }
+                )
                 RoundedTextButton(
                     text = "Save",
                     onClick = {
+                        pendingMicAction = null
+                        editVoiceStatus = ""
+                        editTranscribeLevel = 0f
+                        editAudioRecorder.stopRecording()
                         editVoiceRecognizer.stopListening()
+                        if (verse.recordedAudioPath != null && verse.recordedAudioPath != editedRecordedAudioPath) {
+                            deleteAudioRecordingIfExists(verse.recordedAudioPath)
+                        }
                         onSave(
                             verse.copy(
                                 translation = selectedBibleVersion,
-                                text = verseText
+                                text = verseText,
+                                recordedAudioPath = editedRecordedAudioPath?.takeIf { java.io.File(it).exists() }
                             ),
                             selectedType
                         )
@@ -1664,27 +1723,90 @@ private fun EditVerseScreen(
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onBackground
                         )
-                        SmallIconButton(
-                            icon = Icons.Filled.KeyboardVoice,
-                            label = stringResource(R.string.start_voice_input),
-                            tint = if (editVoiceRecognizer.isListening) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
-                            onClick = {
-                                if (editVoiceRecognizer.isListening) {
-                                    dictatedPrefix = verseText.trim()
-                                    editVoiceRecognizer.stopListening()
-                                } else if (
-                                    ContextCompat.checkSelfPermission(
-                                        context,
-                                        Manifest.permission.RECORD_AUDIO
-                                    ) == PackageManager.PERMISSION_GRANTED
-                                ) {
-                                    dictatedPrefix = verseText.trim()
-                                    editVoiceRecognizer.startListening()
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            SmallIconButton(
+                                icon = Icons.Filled.KeyboardVoice,
+                                label = "Transcribe verse text",
+                                tint = if (editVoiceRecognizer.isListening) {
+                                    MaterialTheme.colorScheme.primary
                                 } else {
-                                    dictatedPrefix = verseText.trim()
-                                    editVoicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    MaterialTheme.colorScheme.onBackground
+                                },
+                                onClick = {
+                                    if (editVoiceRecognizer.isListening) {
+                                        editVoiceRecognizer.stopListening()
+                                        editVoiceStatus = ""
+                                        editTranscribeLevel = 0f
+                                    } else if (
+                                        ContextCompat.checkSelfPermission(
+                                            context,
+                                            Manifest.permission.RECORD_AUDIO
+                                        ) == PackageManager.PERMISSION_GRANTED
+                                    ) {
+                                        dictatedPrefix = verseText.trim()
+                                        editAudioRecorder.stopRecording()
+                                        pendingMicAction = null
+                                        editVoiceStatus = "Starting voice input..."
+                                        editVoiceRecognizer.startListening()
+                                    } else {
+                                        pendingMicAction = AddVerseMicAction.Transcribe
+                                        editVoicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    }
                                 }
-                            }
+                            )
+                            SmallIconButton(
+                                icon = Icons.Filled.GraphicEq,
+                                label = "Record voice file",
+                                tint = if (editAudioRecorder.isRecording) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onBackground
+                                },
+                                onClick = {
+                                    if (editAudioRecorder.isRecording) {
+                                        editAudioRecorder.stopRecording()
+                                        editVoiceStatus = if (!editedRecordedAudioPath.isNullOrBlank()) {
+                                            "Voice recording saved."
+                                        } else {
+                                            ""
+                                        }
+                                    } else if (
+                                        ContextCompat.checkSelfPermission(
+                                            context,
+                                            Manifest.permission.RECORD_AUDIO
+                                        ) == PackageManager.PERMISSION_GRANTED
+                                    ) {
+                                        editVoiceRecognizer.stopListening()
+                                        if (editedRecordedAudioPath != verse.recordedAudioPath) {
+                                            editedRecordedAudioPath?.let { deleteAudioRecordingIfExists(it) }
+                                        }
+                                        editedRecordedAudioPath = createVerseRecordingPath(context)
+                                        val recordingStarted = editedRecordedAudioPath?.let { editAudioRecorder.startRecording(it) } == true
+                                        editVoiceStatus = if (recordingStarted) {
+                                            "Recording voice..."
+                                        } else {
+                                            editedRecordedAudioPath = verse.recordedAudioPath
+                                            "Audio recording is unavailable on this device."
+                                        }
+                                    } else {
+                                        pendingMicAction = AddVerseMicAction.Record
+                                        editVoicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    }
+                                }
+                            )
+                        }
+                    }
+                    if (editVoiceRecognizer.isListening || editAudioRecorder.isRecording) {
+                        VoiceLevelIndicator(
+                            level = if (editVoiceRecognizer.isListening) editTranscribeLevel else editAudioRecorder.level,
+                            active = true
+                        )
+                    }
+                    if (editVoiceStatus.isNotBlank()) {
+                        Text(
+                            text = editVoiceStatus,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     TextField(
