@@ -99,6 +99,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -193,6 +194,74 @@ private val bibleBooks = listOf(
     BibleBook("1 John", 5), BibleBook("2 John", 1), BibleBook("3 John", 1),
     BibleBook("Jude", 1), BibleBook("Revelation", 22)
 )
+private val koreanBookNames = mapOf(
+    "Genesis" to "창세기",
+    "Exodus" to "출애굽기",
+    "Leviticus" to "레위기",
+    "Numbers" to "민수기",
+    "Deuteronomy" to "신명기",
+    "Joshua" to "여호수아",
+    "Judges" to "사사기",
+    "Ruth" to "룻기",
+    "1 Samuel" to "사무엘상",
+    "2 Samuel" to "사무엘하",
+    "1 Kings" to "열왕기상",
+    "2 Kings" to "열왕기하",
+    "1 Chronicles" to "역대상",
+    "2 Chronicles" to "역대하",
+    "Ezra" to "에스라",
+    "Nehemiah" to "느헤미야",
+    "Esther" to "에스더",
+    "Job" to "욥기",
+    "Psalms" to "시편",
+    "Proverbs" to "잠언",
+    "Ecclesiastes" to "전도서",
+    "Song of Solomon" to "아가",
+    "Isaiah" to "이사야",
+    "Jeremiah" to "예레미야",
+    "Lamentations" to "예레미야애가",
+    "Ezekiel" to "에스겔",
+    "Daniel" to "다니엘",
+    "Hosea" to "호세아",
+    "Joel" to "요엘",
+    "Amos" to "아모스",
+    "Obadiah" to "오바댜",
+    "Jonah" to "요나",
+    "Micah" to "미가",
+    "Nahum" to "나훔",
+    "Habakkuk" to "하박국",
+    "Zephaniah" to "스바냐",
+    "Haggai" to "학개",
+    "Zechariah" to "스가랴",
+    "Malachi" to "말라기",
+    "Matthew" to "마태복음",
+    "Mark" to "마가복음",
+    "Luke" to "누가복음",
+    "John" to "요한복음",
+    "Acts" to "사도행전",
+    "Romans" to "로마서",
+    "1 Corinthians" to "고린도전서",
+    "2 Corinthians" to "고린도후서",
+    "Galatians" to "갈라디아서",
+    "Ephesians" to "에베소서",
+    "Philippians" to "빌립보서",
+    "Colossians" to "골로새서",
+    "1 Thessalonians" to "데살로니가전서",
+    "2 Thessalonians" to "데살로니가후서",
+    "1 Timothy" to "디모데전서",
+    "2 Timothy" to "디모데후서",
+    "Titus" to "디도서",
+    "Philemon" to "빌레몬서",
+    "Hebrews" to "히브리서",
+    "James" to "야고보서",
+    "1 Peter" to "베드로전서",
+    "2 Peter" to "베드로후서",
+    "1 John" to "요한일서",
+    "2 John" to "요한이서",
+    "3 John" to "요한삼서",
+    "Jude" to "유다서",
+    "Revelation" to "요한계시록"
+)
 
 private enum class BottomTab(val label: String) {
     Review("Review"),
@@ -282,6 +351,7 @@ private fun MemorizeApp() {
     }
     val verse = dueVerses.firstOrNull() ?: upcomingVerses.firstOrNull() ?: starterVerses.first()
     val passCount = versePassCounts.values.sum()
+    val completedDueCount = dueVerses.count { dueVerse -> (versePassCounts[dueVerse.id] ?: 0) > 0 }
     val verseWords = remember(verse.id, verse.reference, verse.text) { verse.text.split(" ") }
     val reviewHiddenIndices = remember(verse.id, verse.reference, verse.text) { buildReviewHiddenIndices(verseWords) }
     val dueCount = dueVerses.size
@@ -324,7 +394,12 @@ private fun MemorizeApp() {
         label = "memorizeProgress"
     )
     val reviewFullyMatched = reviewHiddenIndices.isNotEmpty() && reviewHiddenIndices.all { it in matchedIndices }
-    val displayProgressPercent = if (reviewCompleted || reviewFullyMatched) 100 else (progress * 100).roundToInt()
+    val currentVerseProgressPercent = if (reviewCompleted || reviewFullyMatched) 100 else (progress * 100).roundToInt()
+    val displayProgressPercent = if (dueCount <= 0) {
+        0
+    } else {
+        ((completedDueCount * 100f) / dueCount.toFloat()).roundToInt().coerceAtMost(100)
+    }
     val microphonePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -438,7 +513,8 @@ private fun MemorizeApp() {
                         verse = verse,
                         dueCount = dueCount,
                         passCount = passCount,
-                        progressPercent = displayProgressPercent,
+                        dashboardProgressPercent = displayProgressPercent,
+                        currentVerseProgressPercent = currentVerseProgressPercent,
                         onResetReview = resetReviewSession,
                         dueVerses = dueVerses,
                         upcomingVerses = upcomingVerses,
@@ -642,7 +718,8 @@ private fun ReviewScreen(
     verse: Verse,
     dueCount: Int,
     passCount: Int,
-    progressPercent: Int,
+    dashboardProgressPercent: Int,
+    currentVerseProgressPercent: Int,
     onResetReview: () -> Unit,
     dueVerses: SnapshotStateList<Verse>,
     upcomingVerses: SnapshotStateList<Verse>,
@@ -691,7 +768,7 @@ private fun ReviewScreen(
             StatsRow(
                 dueCount = dueCount,
                 passCount = passCount,
-                progressPercent = progressPercent,
+                progressPercent = dashboardProgressPercent,
                 onResetReview = onResetReview
             )
             if (isReviewing) {
@@ -741,7 +818,7 @@ private fun ReviewScreen(
                                 verse = dueVerse,
                                 passCount = versePassCounts[dueVerse.id] ?: 0,
                                 hiddenWordCount = if (dueVerse.id == verse.id) hiddenWordCount else 0,
-                                progressPercent = if (dueVerse.id == verse.id) progressPercent else 0,
+                                progressPercent = if (dueVerse.id == verse.id) currentVerseProgressPercent else 0,
                                 onEdit = { onEditDueVerse(dueVerse) },
                                 onSpeak = { onSpeak(dueVerse) },
                                 onRepeatToggle = { onRepeatToggle(dueVerse) },
@@ -822,7 +899,12 @@ private fun ReviewScreen(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f))
                 ) {
                     Column(modifier = Modifier.padding(14.dp)) {
-                        Text(activeDrag.verse.reference, color = MaterialTheme.colorScheme.onBackground, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = localizedReference(activeDrag.verse.reference, activeDrag.verse.translation),
+                            color = MaterialTheme.colorScheme.onBackground,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = bibleVersionFontFamily(activeDrag.verse.translation)
+                        )
                         Text(
                             text = activeDrag.verse.text,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -984,6 +1066,7 @@ private fun AddVerseScreen(
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val addVoiceRecognizer = rememberVoiceRecognizer(
+        languageTag = bibleVersionToLanguageTag(selectedBibleVersion),
         onResult = { spokenText ->
             val updatedText = mergeRecognizedText(dictatedPrefix, spokenText)
             dictatedPrefix = updatedText
@@ -1084,11 +1167,21 @@ private fun AddVerseScreen(
                         .padding(20.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    SelectionDropdownField("Bible Version", selectedBibleVersion, bibleVersions) {
+                    SelectionDropdownField(
+                        label = "Bible Version",
+                        selectedValue = selectedBibleVersion,
+                        options = bibleVersions,
+                        fontFamily = bibleVersionFontFamily(selectedBibleVersion)
+                    ) {
                         selectedBibleVersion = it
                     }
-                    SelectionDropdownField("Book", selectedBook.name, bibleBooks.map { it.name }) {
-                        selectedBook = bibleBooks.first { book -> book.name == it }
+                    SelectionDropdownField(
+                        label = "Book",
+                        selectedValue = displayBookName(selectedBook, selectedBibleVersion),
+                        options = bibleBooks.map { book -> displayBookName(book, selectedBibleVersion) },
+                        fontFamily = bibleVersionFontFamily(selectedBibleVersion)
+                    ) {
+                        selectedBook = findBookByDisplayName(it, selectedBibleVersion)
                         selectedChapter = 1
                         selectedVerseStart = 1
                         selectedVerseEnd = 1
@@ -1193,6 +1286,9 @@ private fun AddVerseScreen(
                             .fillMaxWidth()
                             .height(180.dp),
                         placeholder = { Text("Verse Text") },
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                            fontFamily = bibleVersionFontFamily(selectedBibleVersion)
+                        ),
                         colors = darkFieldColors()
                     )
                 }
@@ -1216,6 +1312,7 @@ private fun EditVerseScreen(
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val editVoiceRecognizer = rememberVoiceRecognizer(
+        languageTag = bibleVersionToLanguageTag(selectedBibleVersion),
         onResult = { spokenText ->
             val updatedText = mergeRecognizedText(dictatedPrefix, spokenText)
             dictatedPrefix = updatedText
@@ -1299,14 +1396,22 @@ private fun EditVerseScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     TextField(
-                        value = verse.reference,
+                        value = localizedReference(verse.reference, selectedBibleVersion),
                         onValueChange = {},
                         readOnly = true,
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("Verse") },
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                            fontFamily = bibleVersionFontFamily(selectedBibleVersion)
+                        ),
                         colors = darkFieldColors()
                     )
-                    SelectionDropdownField("Bible Version", selectedBibleVersion, bibleVersions) {
+                    SelectionDropdownField(
+                        label = "Bible Version",
+                        selectedValue = selectedBibleVersion,
+                        options = bibleVersions,
+                        fontFamily = bibleVersionFontFamily(selectedBibleVersion)
+                    ) {
                         selectedBibleVersion = it
                     }
                 }
@@ -1372,6 +1477,9 @@ private fun EditVerseScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(220.dp),
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                            fontFamily = bibleVersionFontFamily(selectedBibleVersion)
+                        ),
                         colors = darkFieldColors()
                     )
                 }
@@ -1404,6 +1512,7 @@ private fun SelectionDropdownField(
     label: String,
     selectedValue: String,
     options: List<String>,
+    fontFamily: FontFamily = FontFamily.Default,
     onSelected: (String) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -1419,6 +1528,7 @@ private fun SelectionDropdownField(
                 .fillMaxWidth()
                 .menuAnchor(),
             label = { Text(label) },
+            textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = fontFamily),
             colors = darkFieldColors(),
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) }
         )
@@ -1432,7 +1542,13 @@ private fun SelectionDropdownField(
         ) {
             options.forEach { option ->
                 DropdownMenuItem(
-                    text = { Text(option, color = MaterialTheme.colorScheme.onBackground) },
+                    text = {
+                        Text(
+                            option,
+                            color = MaterialTheme.colorScheme.onBackground,
+                            fontFamily = fontFamily
+                        )
+                    },
                     onClick = {
                         onSelected(option)
                         expanded = false
@@ -1909,10 +2025,11 @@ private fun DueVerseCard(
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
-                        text = verse.reference,
+                        text = localizedReference(verse.reference, verse.translation),
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onBackground
+                        color = MaterialTheme.colorScheme.onBackground,
+                        fontFamily = bibleVersionFontFamily(verse.translation)
                     )
                     if (passCount > 0) {
                         Box(
@@ -1992,10 +2109,11 @@ private fun ReviewPracticeCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = verse.reference,
+                    text = localizedReference(verse.reference, verse.translation),
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground
+                    color = MaterialTheme.colorScheme.onBackground,
+                    fontFamily = bibleVersionFontFamily(verse.translation)
                 )
                 ReviewActionRow(
                     repeatMode = repeatMode,
@@ -2316,9 +2434,7 @@ private fun VersePreview(verse: Verse, hiddenWordCount: Int) {
     Text(
         text = previewText,
         style = MaterialTheme.typography.bodyLarge,
-        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.76f),
-        maxLines = 4,
-        overflow = TextOverflow.Ellipsis
+        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.76f)
     )
 }
 
@@ -2454,6 +2570,56 @@ private fun List<Verse>.toJson(): String =
         }
     }.toString()
 
+private fun bibleVersionToLanguageTag(version: String): String = when (version) {
+    "개역한글" -> "ko-KR"
+    "中文" -> "zh-CN"
+    "Español" -> "es-ES"
+    "日本語" -> "ja-JP"
+    "Deutsch" -> "de-DE"
+    else -> "en-US"
+}
+
+private fun displayBookName(book: BibleBook, version: String): String =
+    if (version == "개역한글") {
+        koreanBookNames[book.name] ?: book.name
+    } else {
+        book.name
+    }
+
+private fun findBookByDisplayName(displayName: String, version: String): BibleBook =
+    if (version == "개역한글") {
+        bibleBooks.firstOrNull { (koreanBookNames[it.name] ?: it.name) == displayName }
+            ?: bibleBooks.first()
+    } else {
+        bibleBooks.firstOrNull { it.name == displayName } ?: bibleBooks.first()
+    }
+
+private fun localizedReference(reference: String, translation: String): String {
+    if (translation != "개역한글") return reference
+
+    val matchingBook = bibleBooks
+        .sortedByDescending { it.name.length }
+        .firstOrNull { book ->
+            reference.startsWith("${book.name} ") || reference == book.name
+        }
+
+    if (matchingBook != null) {
+        val localizedBook = koreanBookNames[matchingBook.name] ?: matchingBook.name
+        return reference.replaceFirst(matchingBook.name, localizedBook)
+    }
+
+    return reference
+}
+
+private fun bibleVersionFontFamily(version: String): FontFamily =
+    if (version == "개역한글") {
+        // Android cannot reliably use Windows' Malgun Gothic unless the font is bundled.
+        // Use the platform sans fallback for Korean-specific rendering in this project.
+        FontFamily.SansSerif
+    } else {
+        FontFamily.Default
+    }
+
 private fun mergeRecognizedText(existing: String, incoming: String): String {
     val current = existing.trim()
     val next = incoming.trim()
@@ -2476,6 +2642,7 @@ private data class VoiceRecognizerController(
 
 @Composable
 private fun rememberVoiceRecognizer(
+    languageTag: String = Locale.getDefault().toLanguageTag(),
     onResult: (String) -> Unit,
     onPartialResult: (String) -> Unit = onResult,
     onError: (String) -> Unit,
@@ -2489,6 +2656,7 @@ private fun rememberVoiceRecognizer(
     val currentOnError by rememberUpdatedState(onError)
     val currentOnListeningStateChanged by rememberUpdatedState(onListeningStateChanged)
     val currentOnLevelChanged by rememberUpdatedState(onLevelChanged)
+    val currentLanguageTag by rememberUpdatedState(languageTag)
     var speechRecognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
     var isListening by remember { mutableStateOf(false) }
     var shouldKeepListening by remember { mutableStateOf(false) }
@@ -2496,7 +2664,8 @@ private fun rememberVoiceRecognizer(
     fun buildRecognizerIntent(): Intent =
         Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, currentLanguageTag)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, currentLanguageTag)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
