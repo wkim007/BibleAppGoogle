@@ -901,10 +901,18 @@ private fun AddVerseScreen(
     var tags by remember { mutableStateOf("") }
     var difficulty by remember { mutableStateOf(VerseDifficulty.Medium) }
     var verseText by remember { mutableStateOf("") }
+    var dictatedPrefix by remember { mutableStateOf("") }
     val maxVerse = selectedBook.knownVerseCounts[selectedChapter] ?: 50
     val context = LocalContext.current
     val addVoiceRecognizer = rememberVoiceRecognizer(
-        onResult = { spokenText -> verseText = mergeRecognizedText(verseText, spokenText) },
+        onResult = { spokenText ->
+            val updatedText = mergeRecognizedText(dictatedPrefix, spokenText)
+            dictatedPrefix = updatedText
+            verseText = updatedText
+        },
+        onPartialResult = { spokenText ->
+            verseText = mergeRecognizedText(dictatedPrefix, spokenText)
+        },
         onError = {},
         onListeningStateChanged = { _ -> },
         onLevelChanged = {}
@@ -1075,6 +1083,7 @@ private fun AddVerseScreen(
                             tint = if (addVoiceRecognizer.isListening) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
                             onClick = {
                                 if (addVoiceRecognizer.isListening) {
+                                    dictatedPrefix = verseText.trim()
                                     addVoiceRecognizer.stopListening()
                                 } else if (
                                     ContextCompat.checkSelfPermission(
@@ -1082,8 +1091,10 @@ private fun AddVerseScreen(
                                         Manifest.permission.RECORD_AUDIO
                                     ) == PackageManager.PERMISSION_GRANTED
                                 ) {
+                                    dictatedPrefix = verseText.trim()
                                     addVoiceRecognizer.startListening()
                                 } else {
+                                    dictatedPrefix = verseText.trim()
                                     addVoicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                 }
                             }
@@ -2090,6 +2101,7 @@ private data class VoiceRecognizerController(
 @Composable
 private fun rememberVoiceRecognizer(
     onResult: (String) -> Unit,
+    onPartialResult: (String) -> Unit = onResult,
     onError: (String) -> Unit,
     onListeningStateChanged: (Boolean) -> Unit,
     onLevelChanged: (Float) -> Unit
@@ -2097,6 +2109,7 @@ private fun rememberVoiceRecognizer(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val currentOnResult by rememberUpdatedState(onResult)
+    val currentOnPartialResult by rememberUpdatedState(onPartialResult)
     val currentOnError by rememberUpdatedState(onError)
     val currentOnListeningStateChanged by rememberUpdatedState(onListeningStateChanged)
     val currentOnLevelChanged by rememberUpdatedState(onLevelChanged)
@@ -2203,7 +2216,7 @@ private fun rememberVoiceRecognizer(
                         ?.firstOrNull()
                         .orEmpty()
                     if (spokenText.isNotBlank()) {
-                        currentOnResult(spokenText)
+                        currentOnPartialResult(spokenText)
                     }
                 }
 
