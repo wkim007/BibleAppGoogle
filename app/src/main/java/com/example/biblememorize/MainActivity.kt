@@ -358,6 +358,7 @@ private fun MemorizeApp() {
     val reviewScope = rememberCoroutineScope()
     val speaker = rememberVerseSpeaker(speechRate)
     val voiceRecognizer = rememberVoiceRecognizer(
+        languageTag = bibleVersionToLanguageTag(verse.translation),
         onResult = { spokenText ->
             val mergedText = mergeRecognizedText(recognizedText, spokenText)
             recognizedText = mergedText
