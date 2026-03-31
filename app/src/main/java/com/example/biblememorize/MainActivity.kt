@@ -1144,7 +1144,7 @@ private fun AddVerseScreen(
     var verseText by remember { mutableStateOf("") }
     var dictatedPrefix by remember { mutableStateOf("") }
     var recordedAudioPath by remember { mutableStateOf<String?>(null) }
-    var addVoiceLevel by remember { mutableStateOf(0f) }
+    var pendingRecordingStart by remember { mutableStateOf(false) }
     var addVoiceStatus by remember { mutableStateOf("") }
     val maxVerse = selectedBook.knownVerseCounts[selectedChapter] ?: 50
     val context = LocalContext.current
@@ -1154,29 +1154,36 @@ private fun AddVerseScreen(
     val addVoiceRecognizer = rememberVoiceRecognizer(
         languageTag = bibleVersionToLanguageTag(selectedBibleVersion),
         onResult = { spokenText ->
-            val updatedText = mergeRecognizedText(dictatedPrefix, spokenText)
-            dictatedPrefix = updatedText
-            verseText = updatedText
-        },
-        onPartialResult = { spokenText ->
-            verseText = mergeRecognizedText(dictatedPrefix, spokenText)
-        },
-        onError = {
-            addVoiceStatus = if (it.isBlank()) addVoiceStatus else it
-            addVoiceLevel = 0f
-        },
-        onListeningStateChanged = { listening ->
-            if (listening) {
-                addVoiceStatus = if (addAudioRecorder.isRecording) {
-                    "Listening and recording..."
-                } else {
-                    "Listening..."
-                }
-            } else if (addVoiceStatus == "Listening..." || addVoiceStatus == "Listening and recording...") {
-                addVoiceStatus = ""
+            if (spokenText.isNotBlank()) {
+                val updatedText = mergeRecognizedText(dictatedPrefix, spokenText)
+                dictatedPrefix = updatedText
+                verseText = updatedText
             }
         },
-        onLevelChanged = { addVoiceLevel = it }
+        onPartialResult = { spokenText ->
+            if (spokenText.isNotBlank()) {
+                verseText = mergeRecognizedText(dictatedPrefix, spokenText)
+            }
+        },
+        onError = { message ->
+            if (message.contains("Microphone permission", ignoreCase = true)) {
+                addVoiceStatus = message
+            }
+            pendingRecordingStart = false
+        },
+        onListeningStateChanged = { listening ->
+            if (listening && pendingRecordingStart && !addAudioRecorder.isRecording) {
+                val recordingStarted = recordedAudioPath?.let { addAudioRecorder.startRecording(it) } == true
+                pendingRecordingStart = false
+                if (recordingStarted) {
+                    addVoiceStatus = "Recording voice..."
+                } else {
+                    recordedAudioPath = null
+                    addVoiceStatus = "Voice text input started. Audio recording is unavailable on this device."
+                }
+            }
+        },
+        onLevelChanged = { _ -> }
     )
     val addVoicePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -1184,11 +1191,9 @@ private fun AddVerseScreen(
         if (granted) {
             recordedAudioPath?.let { deleteAudioRecordingIfExists(it) }
             recordedAudioPath = createVerseRecordingPath(context)
-            val recordingStarted = recordedAudioPath?.let { addAudioRecorder.startRecording(it) } == true
-            if (!recordingStarted) {
-                recordedAudioPath = null
-                addVoiceStatus = "Voice text input started. Audio recording is unavailable on this device."
-            }
+            dictatedPrefix = verseText.trim()
+            pendingRecordingStart = true
+            addVoiceStatus = "Starting voice input..."
             addVoiceRecognizer.startListening()
         } else {
             addVoiceStatus = "Microphone permission is required."
@@ -1226,8 +1231,8 @@ private fun AddVerseScreen(
                 RoundedTextButton(
                     "Cancel",
                     onClick = {
+                        pendingRecordingStart = false
                         addVoiceStatus = ""
-                        addVoiceLevel = 0f
                         addAudioRecorder.stopRecording()
                         addVoiceRecognizer.stopListening()
                         recordedAudioPath?.let { deleteAudioRecordingIfExists(it) }
@@ -1248,8 +1253,8 @@ private fun AddVerseScreen(
                                 append(selectedVerseEnd)
                             }
                         }
+                        pendingRecordingStart = false
                         addVoiceStatus = ""
-                        addVoiceLevel = 0f
                         addAudioRecorder.stopRecording()
                         addVoiceRecognizer.stopListening()
                         onSave(
@@ -1381,46 +1386,43 @@ private fun AddVerseScreen(
                         SmallIconButton(
                             icon = Icons.Filled.KeyboardVoice,
                             label = stringResource(R.string.start_voice_input),
-                            tint = if (addVoiceRecognizer.isListening || addAudioRecorder.isRecording) {
+                            tint = if (addAudioRecorder.isRecording || addVoiceRecognizer.isListening) {
                                 MaterialTheme.colorScheme.primary
                             } else {
                                 MaterialTheme.colorScheme.onBackground
                             },
                             onClick = {
-                                if (addVoiceRecognizer.isListening || addAudioRecorder.isRecording) {
-                                    dictatedPrefix = verseText.trim()
-                                    addVoiceStatus = ""
-                                    addVoiceLevel = 0f
+                                if (addAudioRecorder.isRecording || addVoiceRecognizer.isListening) {
+                                    pendingRecordingStart = false
                                     addAudioRecorder.stopRecording()
                                     addVoiceRecognizer.stopListening()
+                                    addVoiceStatus = if (!recordedAudioPath.isNullOrBlank()) {
+                                        "Voice recording saved."
+                                    } else {
+                                        ""
+                                    }
                                 } else if (
                                     ContextCompat.checkSelfPermission(
                                         context,
                                         Manifest.permission.RECORD_AUDIO
-                                    ) == PackageManager.PERMISSION_GRANTED
+                                ) == PackageManager.PERMISSION_GRANTED
                                 ) {
-                                    dictatedPrefix = verseText.trim()
                                     recordedAudioPath?.let { deleteAudioRecordingIfExists(it) }
                                     recordedAudioPath = createVerseRecordingPath(context)
-                                    val recordingStarted = recordedAudioPath?.let { addAudioRecorder.startRecording(it) } == true
-                                    if (!recordingStarted) {
-                                        recordedAudioPath = null
-                                        addVoiceStatus = "Voice text input started. Audio recording is unavailable on this device."
-                                    } else {
-                                        addVoiceStatus = "Listening and recording..."
-                                    }
+                                    dictatedPrefix = verseText.trim()
+                                    pendingRecordingStart = true
+                                    addVoiceStatus = "Starting voice input..."
                                     addVoiceRecognizer.startListening()
                                 } else {
-                                    dictatedPrefix = verseText.trim()
                                     addVoicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                 }
                             }
                         )
                     }
-                    if (addVoiceRecognizer.isListening || addAudioRecorder.isRecording) {
+                    if (addAudioRecorder.isRecording) {
                         VoiceLevelIndicator(
-                            level = addVoiceLevel,
-                            active = addVoiceRecognizer.isListening
+                            level = addAudioRecorder.level,
+                            active = true
                         )
                     }
                     if (addVoiceStatus.isNotBlank()) {
@@ -1432,7 +1434,10 @@ private fun AddVerseScreen(
                     }
                     TextField(
                         value = verseText,
-                        onValueChange = { verseText = it },
+                        onValueChange = {
+                            verseText = it
+                            dictatedPrefix = it.trim()
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(180.dp),
@@ -2988,7 +2993,8 @@ private fun mergeRecognizedText(existing: String, incoming: String): String {
 private data class VerseAudioRecorderController(
     val startRecording: (String) -> Boolean,
     val stopRecording: () -> Unit,
-    val isRecording: Boolean
+    val isRecording: Boolean,
+    val level: Float
 )
 
 private data class VerseAudioPlayerController(
@@ -3168,22 +3174,28 @@ private fun rememberVoiceRecognizer(
 
 @Composable
 private fun rememberVerseAudioRecorder(): VerseAudioRecorderController {
+    val scope = rememberCoroutineScope()
     var mediaRecorder by remember { mutableStateOf<MediaRecorder?>(null) }
     var isRecording by remember { mutableStateOf(false) }
+    var level by remember { mutableStateOf(0f) }
+    var levelJob by remember { mutableStateOf<Job?>(null) }
 
     DisposableEffect(Unit) {
         onDispose {
+            levelJob?.cancel()
             runCatching { mediaRecorder?.stop() }
             runCatching { mediaRecorder?.release() }
             mediaRecorder = null
             isRecording = false
+            level = 0f
         }
     }
 
-    return remember(mediaRecorder, isRecording) {
+    return remember(mediaRecorder, isRecording, level, levelJob) {
         VerseAudioRecorderController(
             startRecording = { outputPath ->
                 runCatching {
+                    levelJob?.cancel()
                     mediaRecorder?.release()
                     mediaRecorder = MediaRecorder().apply {
                         setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
@@ -3194,21 +3206,32 @@ private fun rememberVerseAudioRecorder(): VerseAudioRecorderController {
                         start()
                     }
                     isRecording = true
+                    levelJob = scope.launch {
+                        while (isActive && isRecording) {
+                            level = ((mediaRecorder?.maxAmplitude ?: 0) / 32767f).coerceIn(0f, 1f)
+                            delay(120)
+                        }
+                    }
                     true
                 }.getOrElse {
+                    levelJob?.cancel()
                     runCatching { mediaRecorder?.release() }
                     mediaRecorder = null
                     isRecording = false
+                    level = 0f
                     false
                 }
             },
             stopRecording = {
+                levelJob?.cancel()
                 runCatching { mediaRecorder?.stop() }
                 runCatching { mediaRecorder?.release() }
                 mediaRecorder = null
                 isRecording = false
+                level = 0f
             },
-            isRecording = isRecording
+            isRecording = isRecording,
+            level = level
         )
     }
 }
