@@ -2579,6 +2579,9 @@ private fun bibleVersionToLanguageTag(version: String): String = when (version) 
     else -> "en-US"
 }
 
+private fun bibleVersionToLocale(version: String): Locale =
+    Locale.forLanguageTag(bibleVersionToLanguageTag(version))
+
 private fun displayBookName(book: BibleBook, version: String): String =
     if (version == "개역한글") {
         koreanBookNames[book.name] ?: book.name
@@ -2896,7 +2899,7 @@ private fun rememberVerseSpeaker(speechRate: Float): VerseSpeakerController {
         var engine: TextToSpeech? = null
         engine = TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                val result = engine?.setLanguage(Locale.US) ?: TextToSpeech.LANG_NOT_SUPPORTED
+                val result = engine?.setLanguage(Locale.forLanguageTag("en-US")) ?: TextToSpeech.LANG_NOT_SUPPORTED
                 isReady = result != TextToSpeech.LANG_MISSING_DATA && result != TextToSpeech.LANG_NOT_SUPPORTED
             }
         }
@@ -2924,7 +2927,14 @@ private fun rememberVerseSpeaker(speechRate: Float): VerseSpeakerController {
             speak = { verse: Verse, repeatMode: RepeatMode ->
                 val tts = textToSpeech
                 if (isReady && tts != null) {
-                    val utterance = "${verse.reference}. ${verse.text}"
+                    val languageResult = tts.setLanguage(bibleVersionToLocale(verse.translation))
+                    if (
+                        languageResult == TextToSpeech.LANG_MISSING_DATA ||
+                        languageResult == TextToSpeech.LANG_NOT_SUPPORTED
+                    ) {
+                        tts.setLanguage(Locale.forLanguageTag("en-US"))
+                    }
+                    val utterance = "${localizedReference(verse.reference, verse.translation)}. ${verse.text}"
 
                     repeatJob?.cancel()
                     repeatJob = null
