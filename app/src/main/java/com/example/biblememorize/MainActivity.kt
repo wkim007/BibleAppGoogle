@@ -254,7 +254,6 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun MemorizeApp() {
     val context = LocalContext.current
-    var passCount by remember { mutableIntStateOf(0) }
     var hiddenWordCount by remember { mutableIntStateOf(0) }
     var selectedTab by remember { mutableStateOf(BottomTab.Review) }
     var selectedBibleVersion by remember { mutableStateOf("NKJV") }
@@ -274,6 +273,7 @@ private fun MemorizeApp() {
     var pendingEdit by remember { mutableStateOf<PendingEdit?>(null) }
     var voiceLevel by remember { mutableStateOf(0f) }
     val persistedVerseState = remember(context) { loadPersistedVerseState(context) }
+    var versePassCounts by remember(context) { mutableStateOf(loadPersistedVersePassCounts(context)) }
     val dueVerses = remember {
         mutableStateListOf(*persistedVerseState.first.toTypedArray())
     }
@@ -281,6 +281,7 @@ private fun MemorizeApp() {
         mutableStateListOf(*persistedVerseState.second.toTypedArray())
     }
     val verse = dueVerses.firstOrNull() ?: upcomingVerses.firstOrNull() ?: starterVerses.first()
+    val passCount = versePassCounts.values.sum()
     val verseWords = remember(verse.id, verse.reference, verse.text) { verse.text.split(" ") }
     val reviewHiddenIndices = remember(verse.id, verse.reference, verse.text) { buildReviewHiddenIndices(verseWords) }
     val dueCount = dueVerses.size
@@ -352,7 +353,7 @@ private fun MemorizeApp() {
     LaunchedEffect(pendingReviewCompletion) {
         if (pendingReviewCompletion && !reviewCompleted) {
             reviewCompleted = true
-            passCount += 1
+            versePassCounts = versePassCounts + (verse.id to ((versePassCounts[verse.id] ?: 0) + 1))
             recognizedText = ""
             voiceRecognizer.disableAutoRestart()
             voiceRecognizer.stopListening()
@@ -367,6 +368,11 @@ private fun MemorizeApp() {
         }.collectLatest { (savedDueVerses, savedUpcomingVerses) ->
             savePersistedVerseState(context, savedDueVerses, savedUpcomingVerses)
         }
+    }
+
+    LaunchedEffect(context) {
+        snapshotFlow { versePassCounts }
+            .collectLatest { savePersistedVersePassCounts(context, it) }
     }
 
     val moveVerseBetweenSections: (Verse, VerseSection, VerseSection) -> Unit = { draggedVerse, from, to ->
@@ -438,6 +444,7 @@ private fun MemorizeApp() {
                         upcomingVerses = upcomingVerses,
                         dueRepeatModes = dueRepeatModes,
                         upcomingRepeatModes = upcomingRepeatModes,
+                        versePassCounts = versePassCounts,
                         activeDueLooping = speaker.isLooping,
                         onMoveVerse = moveVerseBetweenSections,
                         onAddVerse = { showAddVersePage = true },
@@ -641,6 +648,7 @@ private fun ReviewScreen(
     upcomingVerses: SnapshotStateList<Verse>,
     dueRepeatModes: Map<String, RepeatMode>,
     upcomingRepeatModes: Map<String, RepeatMode>,
+    versePassCounts: Map<String, Int>,
     activeDueLooping: Boolean,
     onMoveVerse: (Verse, VerseSection, VerseSection) -> Unit,
     onAddVerse: () -> Unit,
@@ -731,6 +739,7 @@ private fun ReviewScreen(
                         ) {
                             DueVerseCard(
                                 verse = dueVerse,
+                                passCount = versePassCounts[dueVerse.id] ?: 0,
                                 hiddenWordCount = if (dueVerse.id == verse.id) hiddenWordCount else 0,
                                 progressPercent = if (dueVerse.id == verse.id) progressPercent else 0,
                                 onEdit = { onEditDueVerse(dueVerse) },
@@ -781,6 +790,7 @@ private fun ReviewScreen(
                         ) {
                             DueVerseCard(
                                 verse = upcomingVerse,
+                                passCount = versePassCounts[upcomingVerse.id] ?: 0,
                                 hiddenWordCount = 0,
                                 progressPercent = 0,
                                 onEdit = { onEditUpcomingVerse(upcomingVerse) },
@@ -1869,6 +1879,7 @@ private fun DraggableVerseCard(
 @Composable
 private fun DueVerseCard(
     verse: Verse,
+    passCount: Int,
     hiddenWordCount: Int,
     progressPercent: Int,
     onEdit: () -> Unit,
@@ -1903,18 +1914,20 @@ private fun DueVerseCard(
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onBackground
                     )
-                    Box(
-                        modifier = Modifier
-                            .size(28.dp)
-                            .background(MaterialTheme.colorScheme.secondary, CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "2",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = Color.Black,
-                            fontWeight = FontWeight.Bold
-                        )
+                    if (passCount > 0) {
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .background(MaterialTheme.colorScheme.secondary, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = passCount.toString(),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = Color.Black,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
                 ActionRow(
@@ -2336,6 +2349,7 @@ private fun normalizeToken(token: String): String =
 private const val VERSE_PREFS_NAME = "bible_memorize_verse_store"
 private const val DUE_VERSES_KEY = "due_verses"
 private const val UPCOMING_VERSES_KEY = "upcoming_verses"
+private const val VERSE_PASS_COUNTS_KEY = "verse_pass_counts"
 
 private fun loadPersistedVerseState(context: android.content.Context): Pair<List<Verse>, List<Verse>> {
     val preferences = context.getSharedPreferences(VERSE_PREFS_NAME, android.content.Context.MODE_PRIVATE)
@@ -2364,6 +2378,37 @@ private fun savePersistedVerseState(
     preferences.edit()
         .putString(DUE_VERSES_KEY, dueVerses.toJson())
         .putString(UPCOMING_VERSES_KEY, upcomingVerses.toJson())
+        .apply()
+}
+
+private fun loadPersistedVersePassCounts(context: android.content.Context): Map<String, Int> {
+    val preferences = context.getSharedPreferences(VERSE_PREFS_NAME, android.content.Context.MODE_PRIVATE)
+    val rawValue = preferences.getString(VERSE_PASS_COUNTS_KEY, null).orEmpty()
+    if (rawValue.isBlank()) return emptyMap()
+
+    return runCatching {
+        val jsonObject = JSONObject(rawValue)
+        jsonObject.keys().asSequence().mapNotNull { key ->
+            val count = jsonObject.optInt(key, 0)
+            if (key.isBlank() || count <= 0) null else key to count
+        }.toMap()
+    }.getOrDefault(emptyMap())
+}
+
+private fun savePersistedVersePassCounts(
+    context: android.content.Context,
+    passCounts: Map<String, Int>
+) {
+    val preferences = context.getSharedPreferences(VERSE_PREFS_NAME, android.content.Context.MODE_PRIVATE)
+    val jsonObject = JSONObject().apply {
+        passCounts.forEach { (verseId, count) ->
+            if (verseId.isNotBlank() && count > 0) {
+                put(verseId, count)
+            }
+        }
+    }
+    preferences.edit()
+        .putString(VERSE_PASS_COUNTS_KEY, jsonObject.toString())
         .apply()
 }
 
