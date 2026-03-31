@@ -81,7 +81,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -362,18 +361,21 @@ private fun MemorizeApp() {
     val upcomingVerses = remember {
         mutableStateListOf(*persistedVerseState.second.toTypedArray())
     }
-    val verse = dueVerses.firstOrNull() ?: upcomingVerses.firstOrNull() ?: starterVerses.first()
-    val passCount = versePassCounts.values.sum()
-    val completedDueCount = dueVerses.count { dueVerse -> (versePassCounts[dueVerse.id] ?: 0) > 0 }
-    val verseWords = remember(verse.id, verse.reference, verse.text) { verse.text.split(" ") }
-    val reviewHiddenIndices = remember(verse.id, verse.reference, verse.text, reviewLevel) {
+    val filteredDueVerses = dueVerses.filter { it.translation == selectedBibleVersion }
+    val filteredUpcomingVerses = upcomingVerses.filter { it.translation == selectedBibleVersion }
+    val filteredVerseIds = (filteredDueVerses + filteredUpcomingVerses).map { it.id }.toSet()
+    val verse = filteredDueVerses.firstOrNull() ?: filteredUpcomingVerses.firstOrNull()
+    val passCount = versePassCounts.filterKeys { it in filteredVerseIds }.values.sum()
+    val completedDueCount = filteredDueVerses.count { dueVerse -> (versePassCounts[dueVerse.id] ?: 0) > 0 }
+    val verseWords = remember(verse?.id, verse?.reference, verse?.text) { verse?.text?.split(" ").orEmpty() }
+    val reviewHiddenIndices = remember(verse?.id, verse?.reference, verse?.text, reviewLevel) {
         buildReviewHiddenIndices(verseWords, reviewLevel)
     }
-    val dueCount = dueVerses.size
+    val dueCount = filteredDueVerses.size
     val reviewScope = rememberCoroutineScope()
     val speaker = rememberVerseSpeaker(speechRate)
     val voiceRecognizer = rememberVoiceRecognizer(
-        languageTag = bibleVersionToLanguageTag(verse.translation),
+        languageTag = bibleVersionToLanguageTag(verse?.translation ?: selectedBibleVersion),
         onResult = { spokenText ->
             val mergedText = mergeRecognizedText(recognizedText, spokenText)
             recognizedText = mergedText
@@ -441,7 +443,7 @@ private fun MemorizeApp() {
         }
     }
 
-    LaunchedEffect(verse.id, isReviewing) {
+    LaunchedEffect(verse?.id, isReviewing, selectedBibleVersion) {
         showReviewAnswer = false
         recognizedText = ""
         matchedIndices = emptySet()
@@ -459,7 +461,9 @@ private fun MemorizeApp() {
     LaunchedEffect(pendingReviewCompletion) {
         if (pendingReviewCompletion && !reviewCompleted) {
             reviewCompleted = true
-            versePassCounts = versePassCounts + (verse.id to ((versePassCounts[verse.id] ?: 0) + 1))
+            verse?.let { currentVerse ->
+                versePassCounts = versePassCounts + (currentVerse.id to ((versePassCounts[currentVerse.id] ?: 0) + 1))
+            }
             recognizedText = ""
             voiceRecognizer.disableAutoRestart()
             voiceRecognizer.stopListening()
@@ -521,7 +525,7 @@ private fun MemorizeApp() {
             }
         }
 
-        if (verse.id == editState.verse.id) {
+        if (verse?.id == editState.verse.id) {
             hiddenWordCount = 0
             resetReviewSession()
         }
@@ -547,8 +551,8 @@ private fun MemorizeApp() {
                         dashboardProgressPercent = displayProgressPercent,
                         currentVerseProgressPercent = currentVerseProgressPercent,
                         onResetReview = resetReviewSession,
-                        dueVerses = dueVerses,
-                        upcomingVerses = upcomingVerses,
+                        dueVerses = filteredDueVerses,
+                        upcomingVerses = filteredUpcomingVerses,
                         dueRepeatModes = dueRepeatModes,
                         upcomingRepeatModes = upcomingRepeatModes,
                         versePassCounts = versePassCounts,
@@ -556,9 +560,11 @@ private fun MemorizeApp() {
                         onMoveVerse = moveVerseBetweenSections,
                         onAddVerse = { showAddVersePage = true },
                         onPlay = {
-                            val totalWords = verseWords.size
-                            hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
-                            isReviewing = true
+                            if (verse != null) {
+                                val totalWords = verseWords.size
+                                hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
+                                isReviewing = true
+                            }
                         },
                         onSpeak = { selectedVerse ->
                             speaker.speak(
@@ -593,12 +599,20 @@ private fun MemorizeApp() {
                             pendingEdit = PendingEdit(selectedVerse, VerseSection.Upcoming)
                         },
                         onNextVerse = {
-                            if (dueVerses.size > 1) {
-                                val first = dueVerses.removeAt(0)
-                                dueVerses.add(first)
-                            } else if (dueVerses.isNotEmpty() && upcomingVerses.isNotEmpty()) {
-                                upcomingVerses.add(dueVerses.removeAt(0))
-                                dueVerses.add(upcomingVerses.removeAt(0))
+                            if (filteredDueVerses.size > 1) {
+                                rotateFirstMatchingToEnd(dueVerses) { it.translation == selectedBibleVersion }
+                            } else if (filteredDueVerses.isNotEmpty() && filteredUpcomingVerses.isNotEmpty()) {
+                                moveFirstMatchingVerse(
+                                    source = dueVerses,
+                                    target = upcomingVerses,
+                                    predicate = { it.translation == selectedBibleVersion }
+                                )
+                                moveFirstMatchingVerse(
+                                    source = upcomingVerses,
+                                    target = dueVerses,
+                                    predicate = { it.translation == selectedBibleVersion },
+                                    insertAtStart = true
+                                )
                             }
                             hiddenWordCount = 0
                             reviewCompleted = false
@@ -611,11 +625,15 @@ private fun MemorizeApp() {
                             speaker.stop()
                         },
                         onPreviousVerse = {
-                            if (dueVerses.size > 1) {
-                                val last = dueVerses.removeAt(dueVerses.lastIndex)
-                                dueVerses.add(0, last)
-                            } else if (upcomingVerses.isNotEmpty()) {
-                                dueVerses.add(0, upcomingVerses.removeAt(upcomingVerses.lastIndex))
+                            if (filteredDueVerses.size > 1) {
+                                rotateLastMatchingToFront(dueVerses) { it.translation == selectedBibleVersion }
+                            } else if (filteredUpcomingVerses.isNotEmpty()) {
+                                moveLastMatchingVerse(
+                                    source = upcomingVerses,
+                                    target = dueVerses,
+                                    predicate = { it.translation == selectedBibleVersion },
+                                    insertAtStart = true
+                                )
                             }
                             hiddenWordCount = 0
                             reviewCompleted = false
@@ -623,7 +641,7 @@ private fun MemorizeApp() {
                         },
                         reviewContent = {
                             ReviewPracticeCard(
-                                verse = verse,
+                                verse = verse ?: starterVerses.first(),
                                 verseWords = verseWords,
                                 hiddenIndices = reviewHiddenIndices,
                                 matchedIndices = matchedIndices,
@@ -643,7 +661,7 @@ private fun MemorizeApp() {
                                 },
                                 onSpeakClick = {
                                     recognizedText = ""
-                                    speaker.speak(verse, repeatMode)
+                                    verse?.let { speaker.speak(it, repeatMode) }
                                 },
                                 onRepeatClick = {
                                     recognizedText = ""
@@ -750,14 +768,14 @@ private fun MemorizeApp() {
 @Composable
 private fun ReviewScreen(
     innerPadding: PaddingValues,
-    verse: Verse,
+    verse: Verse?,
     dueCount: Int,
     passCount: Int,
     dashboardProgressPercent: Int,
     currentVerseProgressPercent: Int,
     onResetReview: () -> Unit,
-    dueVerses: SnapshotStateList<Verse>,
-    upcomingVerses: SnapshotStateList<Verse>,
+    dueVerses: List<Verse>,
+    upcomingVerses: List<Verse>,
     dueRepeatModes: Map<String, RepeatMode>,
     upcomingRepeatModes: Map<String, RepeatMode>,
     versePassCounts: Map<String, Int>,
@@ -852,15 +870,15 @@ private fun ReviewScreen(
                             DueVerseCard(
                                 verse = dueVerse,
                                 passCount = versePassCounts[dueVerse.id] ?: 0,
-                                hiddenWordCount = if (dueVerse.id == verse.id) hiddenWordCount else 0,
-                                progressPercent = if (dueVerse.id == verse.id) currentVerseProgressPercent else 0,
+                                hiddenWordCount = 0,
+                                progressPercent = if (dueVerse.id == verse?.id) currentVerseProgressPercent else 0,
                                 onEdit = { onEditDueVerse(dueVerse) },
                                 onSpeak = { onSpeak(dueVerse) },
                                 onRepeatToggle = { onRepeatToggle(dueVerse) },
                                 onNextVerse = { onDeleteDueVerse(dueVerse) },
                                 repeatMode = dueRepeatModes[dueVerse.id] ?: RepeatMode.Off,
                                 isLooping = activeDueLooping &&
-                                    dueVerse.id == verse.id &&
+                                    dueVerse.id == verse?.id &&
                                     (dueRepeatModes[dueVerse.id] ?: RepeatMode.Off) == RepeatMode.Infinite
                             )
                         }
@@ -2181,11 +2199,6 @@ private fun DueVerseCard(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Text(
-                text = "Progress $progressPercent%",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary
-            )
         }
     }
 }
@@ -2773,6 +2786,52 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
+}
+
+private fun rotateFirstMatchingToEnd(
+    verses: MutableList<Verse>,
+    predicate: (Verse) -> Boolean
+) {
+    val matchIndex = verses.indexOfFirst(predicate)
+    if (matchIndex >= 0) {
+        verses.add(verses.removeAt(matchIndex))
+    }
+}
+
+private fun rotateLastMatchingToFront(
+    verses: MutableList<Verse>,
+    predicate: (Verse) -> Boolean
+) {
+    val matchIndex = verses.indexOfLast(predicate)
+    if (matchIndex >= 0) {
+        verses.add(0, verses.removeAt(matchIndex))
+    }
+}
+
+private fun moveFirstMatchingVerse(
+    source: MutableList<Verse>,
+    target: MutableList<Verse>,
+    predicate: (Verse) -> Boolean,
+    insertAtStart: Boolean = false
+) {
+    val matchIndex = source.indexOfFirst(predicate)
+    if (matchIndex >= 0) {
+        val verse = source.removeAt(matchIndex)
+        if (insertAtStart) target.add(0, verse) else target.add(verse)
+    }
+}
+
+private fun moveLastMatchingVerse(
+    source: MutableList<Verse>,
+    target: MutableList<Verse>,
+    predicate: (Verse) -> Boolean,
+    insertAtStart: Boolean = false
+) {
+    val matchIndex = source.indexOfLast(predicate)
+    if (matchIndex >= 0) {
+        val verse = source.removeAt(matchIndex)
+        if (insertAtStart) target.add(0, verse) else target.add(verse)
+    }
 }
 
 private fun mergeRecognizedText(existing: String, incoming: String): String {
