@@ -60,6 +60,7 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
@@ -179,6 +180,7 @@ private fun MemorizeApp() {
     var recognizedText by remember { mutableStateOf("") }
     var matchedIndices by remember { mutableStateOf(setOf<Int>()) }
     var reviewCompleted by remember { mutableStateOf(false) }
+    var showCompletionDialog by remember { mutableStateOf(false) }
     var voiceLevel by remember { mutableStateOf(0f) }
     val verse = starterVerses[verseIndex]
     val verseWords = remember(verse.reference) { verse.text.split(" ") }
@@ -188,24 +190,18 @@ private fun MemorizeApp() {
     val speaker = rememberVerseSpeaker(speechRate)
     val voiceRecognizer = rememberVoiceRecognizer(
         onResult = { spokenText ->
-            recognizedText = spokenText
+            val mergedText = mergeRecognizedText(recognizedText, spokenText)
+            recognizedText = mergedText
             matchedIndices = matchRecognizedWords(
                 verseWords = verseWords,
                 hiddenIndices = reviewHiddenIndices,
-                recognizedText = spokenText
+                recognizedText = mergedText
             )
         },
         onError = {
-            recognizedText = ""
             voiceLevel = 0f
         },
-        onListeningStateChanged = { listening ->
-            if (listening) {
-                recognizedText = "Listening..."
-            } else {
-                recognizedText = ""
-            }
-        },
+        onListeningStateChanged = { _ -> },
         onLevelChanged = { voiceLevel = it }
     )
     val progress by animateFloatAsState(
@@ -230,6 +226,7 @@ private fun MemorizeApp() {
         recognizedText = ""
         matchedIndices = emptySet()
         reviewCompleted = false
+        showCompletionDialog = false
         voiceLevel = 0f
         if (!isReviewing) {
             repeatMode = RepeatMode.Off
@@ -243,7 +240,9 @@ private fun MemorizeApp() {
             reviewCompleted = true
             passCount += 1
             recognizedText = ""
+            voiceRecognizer.disableAutoRestart()
             voiceRecognizer.stopListening()
+            showCompletionDialog = true
         }
     }
 
@@ -256,6 +255,11 @@ private fun MemorizeApp() {
             )
         }
     ) { innerPadding ->
+        if (showCompletionDialog) {
+            CompletionDialog(
+                onDismiss = { showCompletionDialog = false }
+            )
+        }
         when (selectedTab) {
             BottomTab.Review -> {
                 ReviewScreen(
@@ -301,22 +305,29 @@ private fun MemorizeApp() {
                             hiddenIndices = reviewHiddenIndices,
                             matchedIndices = matchedIndices,
                             showAnswer = showReviewAnswer,
-                            recognizedText = recognizedText,
                             repeatMode = repeatMode,
                             isLooping = speaker.isLooping,
                             isListening = voiceRecognizer.isListening,
                             voiceLevel = voiceLevel,
                             onAnswerClick = {
+                                recognizedText = ""
                                 reviewScope.launch {
                                     showReviewAnswer = true
                                     delay(1000)
                                     showReviewAnswer = false
                                 }
                             },
-                            onSpeakClick = { speaker.speak(verse, repeatMode) },
-                            onRepeatClick = { repeatMode = repeatMode.next() },
+                            onSpeakClick = {
+                                recognizedText = ""
+                                speaker.speak(verse, repeatMode)
+                            },
+                            onRepeatClick = {
+                                recognizedText = ""
+                                repeatMode = repeatMode.next()
+                            },
                             onMicClick = {
                                 if (voiceRecognizer.isListening) {
+                                    recognizedText = ""
                                     voiceRecognizer.stopListening()
                                 } else if (
                                     ContextCompat.checkSelfPermission(
@@ -1003,7 +1014,6 @@ private fun ReviewPracticeCard(
     hiddenIndices: Set<Int>,
     matchedIndices: Set<Int>,
     showAnswer: Boolean,
-    recognizedText: String,
     repeatMode: RepeatMode,
     isLooping: Boolean,
     isListening: Boolean,
@@ -1057,15 +1067,35 @@ private fun ReviewPracticeCard(
                 level = voiceLevel,
                 active = isListening
             )
-            if (recognizedText.isNotBlank() || isListening) {
-                Text(
-                    text = if (recognizedText.isNotBlank()) recognizedText else "Listening...",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
         }
     }
+}
+
+@Composable
+private fun CompletionDialog(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text("OK")
+            }
+        },
+        title = {
+            Text(
+                text = "Congratulations",
+                color = MaterialTheme.colorScheme.onBackground
+            )
+        },
+        text = {
+            Text(
+                text = "You completed the verse review.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        containerColor = MaterialTheme.colorScheme.surface,
+        titleContentColor = MaterialTheme.colorScheme.onBackground,
+        textContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+    )
 }
 
 @Composable
@@ -1324,9 +1354,23 @@ private fun matchRecognizedWords(
 private fun normalizeToken(token: String): String =
     token.lowercase(Locale.US).replace(Regex("[^\\p{L}\\p{N}]"), "")
 
+private fun mergeRecognizedText(existing: String, incoming: String): String {
+    val current = existing.trim()
+    val next = incoming.trim()
+
+    if (next.isBlank()) return current
+    if (current.isBlank()) return next
+    if (next.equals(current, ignoreCase = true)) return current
+    if (next.startsWith(current, ignoreCase = true)) return next
+    if (current.startsWith(next, ignoreCase = true)) return current
+
+    return "$current $next"
+}
+
 private data class VoiceRecognizerController(
     val startListening: () -> Unit,
     val stopListening: () -> Unit,
+    val disableAutoRestart: () -> Unit,
     val isListening: Boolean
 )
 
@@ -1478,6 +1522,9 @@ private fun rememberVoiceRecognizer(
                 isListening = false
                 currentOnListeningStateChanged(false)
                 currentOnLevelChanged(0f)
+            },
+            disableAutoRestart = {
+                shouldKeepListening = false
             },
             isListening = isListening
         )
