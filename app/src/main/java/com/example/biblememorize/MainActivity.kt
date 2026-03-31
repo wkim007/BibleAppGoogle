@@ -118,6 +118,9 @@ import com.example.biblememorize.ui.theme.BibleMemorizeTheme
 import java.util.Locale
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
 import kotlin.math.roundToInt
 import kotlin.math.ceil
 import kotlinx.coroutines.Job
@@ -364,6 +367,7 @@ private fun MemorizeApp() {
     var voiceLevel by remember { mutableStateOf(0f) }
     val persistedVerseState = remember(context) { loadPersistedVerseState(context) }
     var versePassCounts by remember(context) { mutableStateOf(loadPersistedVersePassCounts(context)) }
+    var dailyProgressHistory by remember(context) { mutableStateOf(loadPersistedDailyProgressHistory(context)) }
     val dueVerses = remember {
         mutableStateListOf(*persistedVerseState.first.toTypedArray())
     }
@@ -375,7 +379,15 @@ private fun MemorizeApp() {
     val filteredVerseIds = (filteredDueVerses + filteredUpcomingVerses).map { it.id }.toSet()
     val verse = filteredDueVerses.firstOrNull() ?: filteredUpcomingVerses.firstOrNull()
     val passCount = versePassCounts.filterKeys { it in filteredVerseIds }.values.sum()
+    val memorizedCount = filteredVerseIds.count { verseId -> (versePassCounts[verseId] ?: 0) >= 3 }
     val completedDueCount = filteredDueVerses.count { dueVerse -> (versePassCounts[dueVerse.id] ?: 0) > 0 }
+    val versionDailyProgress = dailyProgressHistory[selectedBibleVersion].orEmpty()
+    val streakDays = computeStreakDays(versionDailyProgress.keys)
+    val masteryPercent = if (versionDailyProgress.isEmpty()) {
+        0
+    } else {
+        (versionDailyProgress.values.average()).roundToInt()
+    }
     val verseWords = remember(verse?.id, verse?.reference, verse?.text) { verse?.text?.split(" ").orEmpty() }
     val reviewHiddenIndices = remember(verse?.id, verse?.reference, verse?.text, reviewLevel) {
         buildReviewHiddenIndices(verseWords, reviewLevel)
@@ -473,7 +485,21 @@ private fun MemorizeApp() {
         if (pendingReviewCompletion && !reviewCompleted) {
             reviewCompleted = true
             verse?.let { currentVerse ->
-                versePassCounts = versePassCounts + (currentVerse.id to ((versePassCounts[currentVerse.id] ?: 0) + 1))
+                val updatedPassCounts = versePassCounts + (currentVerse.id to ((versePassCounts[currentVerse.id] ?: 0) + 1))
+                versePassCounts = updatedPassCounts
+                val updatedCompletedDueCount = filteredDueVerses.count { dueVerse ->
+                    (updatedPassCounts[dueVerse.id] ?: 0) > 0
+                }
+                val updatedProgressPercent = if (dueCount <= 0) {
+                    0
+                } else {
+                    ((updatedCompletedDueCount * 100f) / dueCount.toFloat()).roundToInt().coerceAtMost(100)
+                }
+                val currentDate = currentDateKey()
+                val versionHistory = dailyProgressHistory[currentVerse.translation].orEmpty()
+                dailyProgressHistory = dailyProgressHistory + (
+                    currentVerse.translation to (versionHistory + (currentDate to updatedProgressPercent))
+                )
             }
             recognizedText = ""
             voiceRecognizer.disableAutoRestart()
@@ -494,6 +520,11 @@ private fun MemorizeApp() {
     LaunchedEffect(context) {
         snapshotFlow { versePassCounts }
             .collectLatest { savePersistedVersePassCounts(context, it) }
+    }
+
+    LaunchedEffect(context) {
+        snapshotFlow { dailyProgressHistory }
+            .collectLatest { savePersistedDailyProgressHistory(context, it) }
     }
 
     val moveVerseBetweenSections: (Verse, VerseSection, VerseSection) -> Unit = { draggedVerse, from, to ->
@@ -720,7 +751,13 @@ private fun MemorizeApp() {
                     )
                 }
                 BottomTab.Progress -> {
-                    ProgressScreen(innerPadding = innerPadding)
+                    ProgressScreen(
+                        innerPadding = innerPadding,
+                        memorizedCount = memorizedCount,
+                        reviewsCount = passCount,
+                        streakDays = streakDays,
+                        masteryPercent = masteryPercent
+                    )
                 }
                 BottomTab.Settings -> {
                 SettingsScreen(
@@ -1074,7 +1111,13 @@ private fun ReviewTransportButton(
 }
 
 @Composable
-private fun ProgressScreen(innerPadding: PaddingValues) {
+private fun ProgressScreen(
+    innerPadding: PaddingValues,
+    memorizedCount: Int,
+    reviewsCount: Int,
+    streakDays: Int,
+    masteryPercent: Int
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1092,27 +1135,41 @@ private fun ProgressScreen(innerPadding: PaddingValues) {
             fontWeight = FontWeight.Black,
             color = MaterialTheme.colorScheme.onBackground
         )
-        Card(
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f))
+        Text(
+            text = "Overview",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(22.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Text(
-                    text = "Progress screen is next.",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Text(
-                    text = "Review and Settings are active now. Progress can be added next with charts and verse history.",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+            StatCard(
+                modifier = Modifier.weight(1f),
+                label = "Memorized",
+                value = memorizedCount.toString()
+            )
+            StatCard(
+                modifier = Modifier.weight(1f),
+                label = "Reviews",
+                value = reviewsCount.toString()
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            StatCard(
+                modifier = Modifier.weight(1f),
+                label = "Streak",
+                value = "${streakDays}d"
+            )
+            StatCard(
+                modifier = Modifier.weight(1f),
+                label = "Mastery",
+                value = "${masteryPercent}%"
+            )
         }
     }
 }
@@ -2937,6 +2994,7 @@ private const val VERSE_PREFS_NAME = "bible_memorize_verse_store"
 private const val DUE_VERSES_KEY = "due_verses"
 private const val UPCOMING_VERSES_KEY = "upcoming_verses"
 private const val VERSE_PASS_COUNTS_KEY = "verse_pass_counts"
+private const val DAILY_PROGRESS_HISTORY_KEY = "daily_progress_history"
 
 private fun loadPersistedVerseState(context: android.content.Context): Pair<List<Verse>, List<Verse>> {
     val preferences = context.getSharedPreferences(VERSE_PREFS_NAME, android.content.Context.MODE_PRIVATE)
@@ -2996,6 +3054,45 @@ private fun savePersistedVersePassCounts(
     }
     preferences.edit()
         .putString(VERSE_PASS_COUNTS_KEY, jsonObject.toString())
+        .apply()
+}
+
+private fun loadPersistedDailyProgressHistory(context: android.content.Context): Map<String, Map<String, Int>> {
+    val preferences = context.getSharedPreferences(VERSE_PREFS_NAME, android.content.Context.MODE_PRIVATE)
+    val rawValue = preferences.getString(DAILY_PROGRESS_HISTORY_KEY, null).orEmpty()
+    if (rawValue.isBlank()) return emptyMap()
+
+    return runCatching {
+        val rootObject = JSONObject(rawValue)
+        rootObject.keys().asSequence().associateWith { version ->
+            val versionObject = rootObject.optJSONObject(version) ?: JSONObject()
+            versionObject.keys().asSequence().mapNotNull { dateKey ->
+                val progress = versionObject.optInt(dateKey, -1)
+                if (progress < 0) null else dateKey to progress.coerceIn(0, 100)
+            }.toMap()
+        }.filterValues { it.isNotEmpty() }
+    }.getOrDefault(emptyMap())
+}
+
+private fun savePersistedDailyProgressHistory(
+    context: android.content.Context,
+    history: Map<String, Map<String, Int>>
+) {
+    val preferences = context.getSharedPreferences(VERSE_PREFS_NAME, android.content.Context.MODE_PRIVATE)
+    val rootObject = JSONObject().apply {
+        history.forEach { (version, dailyValues) ->
+            put(
+                version,
+                JSONObject().apply {
+                    dailyValues.forEach { (dateKey, progress) ->
+                        put(dateKey, progress.coerceIn(0, 100))
+                    }
+                }
+            )
+        }
+    }
+    preferences.edit()
+        .putString(DAILY_PROGRESS_HISTORY_KEY, rootObject.toString())
         .apply()
 }
 
@@ -3160,6 +3257,29 @@ private fun deleteAudioRecordingIfExists(path: String) {
             file.delete()
         }
     }
+}
+
+private fun currentDateKey(): String =
+    SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+
+private fun computeStreakDays(recordedDates: Set<String>): Int {
+    if (recordedDates.isEmpty()) return 0
+
+    val formatter = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+    val calendar = Calendar.getInstance()
+    var streak = 0
+
+    while (true) {
+        val key = formatter.format(calendar.time)
+        if (key in recordedDates) {
+            streak += 1
+            calendar.add(Calendar.DAY_OF_YEAR, -1)
+        } else {
+            break
+        }
+    }
+
+    return streak
 }
 
 private fun mergeRecognizedText(existing: String, incoming: String): String {
