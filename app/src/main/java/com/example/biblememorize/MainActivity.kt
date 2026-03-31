@@ -46,6 +46,7 @@ import androidx.compose.material.icons.filled.NavigateNext
 import androidx.compose.material.icons.filled.NotInterested
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.VolumeUp
@@ -204,6 +205,17 @@ private fun MemorizeApp() {
         onListeningStateChanged = { _ -> },
         onLevelChanged = { voiceLevel = it }
     )
+    val resetReviewSession = {
+        showReviewAnswer = false
+        recognizedText = ""
+        matchedIndices = emptySet()
+        reviewCompleted = false
+        showCompletionDialog = false
+        voiceLevel = 0f
+        repeatMode = RepeatMode.Off
+        voiceRecognizer.disableAutoRestart()
+        voiceRecognizer.stopListening()
+    }
     val progress by animateFloatAsState(
         targetValue = if (verseWords.isEmpty()) 0f else hiddenWordCount.toFloat() / verseWords.size.toFloat(),
         label = "memorizeProgress"
@@ -268,6 +280,7 @@ private fun MemorizeApp() {
                     dueCount = dueCount,
                     passCount = passCount,
                     progressPercent = displayProgressPercent,
+                    onResetReview = resetReviewSession,
                     onPlay = {
                         val totalWords = verseWords.size
                         hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
@@ -367,6 +380,7 @@ private fun ReviewScreen(
     dueCount: Int,
     passCount: Int,
     progressPercent: Int,
+    onResetReview: () -> Unit,
     hiddenWordCount: Int,
     dueRepeatMode: RepeatMode,
     dueIsLooping: Boolean,
@@ -395,7 +409,8 @@ private fun ReviewScreen(
         StatsRow(
             dueCount = dueCount,
             passCount = passCount,
-            progressPercent = progressPercent
+            progressPercent = progressPercent,
+            onResetReview = onResetReview
         )
         if (isReviewing) {
             ReviewTransportRow(
@@ -823,7 +838,12 @@ private fun HeroTitle() {
 }
 
 @Composable
-private fun StatsRow(dueCount: Int, passCount: Int, progressPercent: Int) {
+private fun StatsRow(
+    dueCount: Int,
+    passCount: Int,
+    progressPercent: Int,
+    onResetReview: () -> Unit
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -837,7 +857,8 @@ private fun StatsRow(dueCount: Int, passCount: Int, progressPercent: Int) {
             modifier = Modifier.weight(1f),
             label = "Pass",
             value = passCount.toString(),
-            badgeIcon = Icons.Filled.PlayArrow
+            badgeIcon = Icons.Filled.RestartAlt,
+            onBadgeClick = onResetReview
         )
         StatCard(
             modifier = Modifier.weight(1f),
@@ -852,7 +873,8 @@ private fun StatCard(
     modifier: Modifier = Modifier,
     label: String,
     value: String,
-    badgeIcon: androidx.compose.ui.graphics.vector.ImageVector? = null
+    badgeIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    onBadgeClick: (() -> Unit)? = null
 ) {
     Card(
         modifier = modifier,
@@ -880,7 +902,10 @@ private fun StatCard(
                     Box(
                         modifier = Modifier
                             .size(30.dp)
-                            .background(Color.White.copy(alpha = 0.18f), CircleShape),
+                            .background(Color.White.copy(alpha = 0.18f), CircleShape)
+                            .clickable(enabled = onBadgeClick != null) {
+                                onBadgeClick?.invoke()
+                            },
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
