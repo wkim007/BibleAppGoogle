@@ -588,7 +588,12 @@ private fun MemorizeApp() {
                         },
                         onRecordedSpeak = { selectedVerse ->
                             speaker.stop()
-                            selectedVerse.recordedAudioPath?.let { recordedAudioPlayer.play(it) }
+                            selectedVerse.recordedAudioPath?.let {
+                                recordedAudioPlayer.play(
+                                    it,
+                                    dueRepeatModes[selectedVerse.id] ?: RepeatMode.Off
+                                )
+                            }
                         },
                         onRepeatToggle = { selectedVerse ->
                             val currentMode = dueRepeatModes[selectedVerse.id] ?: RepeatMode.Off
@@ -603,7 +608,12 @@ private fun MemorizeApp() {
                         },
                         onUpcomingRecordedSpeak = { selectedVerse ->
                             speaker.stop()
-                            selectedVerse.recordedAudioPath?.let { recordedAudioPlayer.play(it) }
+                            selectedVerse.recordedAudioPath?.let {
+                                recordedAudioPlayer.play(
+                                    it,
+                                    upcomingRepeatModes[selectedVerse.id] ?: RepeatMode.Off
+                                )
+                            }
                         },
                         onUpcomingRepeatToggle = { selectedVerse ->
                             val currentMode = upcomingRepeatModes[selectedVerse.id] ?: RepeatMode.Off
@@ -3051,7 +3061,7 @@ private data class VerseAudioRecorderController(
 )
 
 private data class VerseAudioPlayerController(
-    val play: (String) -> Unit,
+    val play: (String, RepeatMode) -> Unit,
     val stop: () -> Unit,
     val playingPath: String?
 )
@@ -3291,11 +3301,14 @@ private fun rememberVerseAudioRecorder(): VerseAudioRecorderController {
 
 @Composable
 private fun rememberVerseAudioPlayer(): VerseAudioPlayerController {
+    val scope = rememberCoroutineScope()
     var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     var playingPath by remember { mutableStateOf<String?>(null) }
+    var repeatJob by remember { mutableStateOf<Job?>(null) }
 
     DisposableEffect(Unit) {
         onDispose {
+            repeatJob?.cancel()
             runCatching { mediaPlayer?.stop() }
             runCatching { mediaPlayer?.release() }
             mediaPlayer = null
@@ -3303,38 +3316,90 @@ private fun rememberVerseAudioPlayer(): VerseAudioPlayerController {
         }
     }
 
-    return remember(mediaPlayer, playingPath) {
+    return remember(mediaPlayer, playingPath, repeatJob) {
         VerseAudioPlayerController(
-            play = { path ->
+            play = { path, repeatMode ->
                 if (path == playingPath) {
+                    repeatJob?.cancel()
                     runCatching { mediaPlayer?.stop() }
                     runCatching { mediaPlayer?.release() }
                     mediaPlayer = null
                     playingPath = null
                 } else {
+                    repeatJob?.cancel()
                     runCatching { mediaPlayer?.stop() }
                     runCatching { mediaPlayer?.release() }
                     mediaPlayer = null
-                    val player = MediaPlayer()
-                    runCatching {
-                        player.setDataSource(path)
-                        player.setOnCompletionListener {
-                            runCatching { it.release() }
-                            mediaPlayer = null
-                            playingPath = null
+
+                    when (repeatMode) {
+                        RepeatMode.Off,
+                        RepeatMode.Once,
+                        RepeatMode.Twice -> {
+                            val totalTimes = when (repeatMode) {
+                                RepeatMode.Off -> 1
+                                RepeatMode.Once -> 2
+                                RepeatMode.Twice -> 3
+                                RepeatMode.Infinite -> 1
+                            }
+                            var remaining = totalTimes
+                            val player = MediaPlayer()
+                            runCatching {
+                                player.setDataSource(path)
+                                player.setOnCompletionListener { completedPlayer ->
+                                    remaining -= 1
+                                    if (remaining > 0) {
+                                        completedPlayer.seekTo(0)
+                                        completedPlayer.start()
+                                    } else {
+                                        runCatching { completedPlayer.release() }
+                                        mediaPlayer = null
+                                        playingPath = null
+                                    }
+                                }
+                                player.prepare()
+                                player.start()
+                                mediaPlayer = player
+                                playingPath = path
+                            }.getOrElse {
+                                runCatching { player.release() }
+                                mediaPlayer = null
+                                playingPath = null
+                            }
                         }
-                        player.prepare()
-                        player.start()
-                        mediaPlayer = player
-                        playingPath = path
-                    }.getOrElse {
-                        runCatching { player.release() }
-                        mediaPlayer = null
-                        playingPath = null
+                        RepeatMode.Infinite -> {
+                            playingPath = path
+                            repeatJob = scope.launch {
+                                while (isActive) {
+                                    val player = MediaPlayer()
+                                    val prepared = runCatching {
+                                        player.setDataSource(path)
+                                        player.prepare()
+                                        player.start()
+                                        mediaPlayer = player
+                                        true
+                                    }.getOrElse {
+                                        runCatching { player.release() }
+                                        mediaPlayer = null
+                                        false
+                                    }
+                                    if (!prepared) {
+                                        playingPath = null
+                                        break
+                                    }
+                                    val duration = player.duration.takeIf { it > 0 }?.toLong() ?: 1500L
+                                    delay(duration)
+                                    runCatching { player.stop() }
+                                    runCatching { player.release() }
+                                    mediaPlayer = null
+                                }
+                                playingPath = null
+                            }
+                        }
                     }
                 }
             },
             stop = {
+                repeatJob?.cancel()
                 runCatching { mediaPlayer?.stop() }
                 runCatching { mediaPlayer?.release() }
                 mediaPlayer = null
