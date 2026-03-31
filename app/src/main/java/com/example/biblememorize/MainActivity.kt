@@ -85,6 +85,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.Alignment
@@ -108,9 +109,12 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.core.content.ContextCompat
 import com.example.biblememorize.ui.theme.BibleMemorizeTheme
 import java.util.Locale
+import org.json.JSONArray
+import org.json.JSONObject
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -249,6 +253,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun MemorizeApp() {
+    val context = LocalContext.current
     var passCount by remember { mutableIntStateOf(0) }
     var hiddenWordCount by remember { mutableIntStateOf(0) }
     var selectedTab by remember { mutableStateOf(BottomTab.Review) }
@@ -268,8 +273,13 @@ private fun MemorizeApp() {
     var pendingDelete by remember { mutableStateOf<PendingDelete?>(null) }
     var pendingEdit by remember { mutableStateOf<PendingEdit?>(null) }
     var voiceLevel by remember { mutableStateOf(0f) }
-    val dueVerses = remember { mutableStateListOf(starterVerses.first()) }
-    val upcomingVerses = remember { mutableStateListOf(*starterVerses.drop(1).toTypedArray()) }
+    val persistedVerseState = remember(context) { loadPersistedVerseState(context) }
+    val dueVerses = remember {
+        mutableStateListOf(*persistedVerseState.first.toTypedArray())
+    }
+    val upcomingVerses = remember {
+        mutableStateListOf(*persistedVerseState.second.toTypedArray())
+    }
     val verse = dueVerses.firstOrNull() ?: upcomingVerses.firstOrNull() ?: starterVerses.first()
     val verseWords = remember(verse.id, verse.reference, verse.text) { verse.text.split(" ") }
     val reviewHiddenIndices = remember(verse.id, verse.reference, verse.text) { buildReviewHiddenIndices(verseWords) }
@@ -314,7 +324,6 @@ private fun MemorizeApp() {
     )
     val reviewFullyMatched = reviewHiddenIndices.isNotEmpty() && reviewHiddenIndices.all { it in matchedIndices }
     val displayProgressPercent = if (reviewCompleted || reviewFullyMatched) 100 else (progress * 100).roundToInt()
-    val context = LocalContext.current
     val microphonePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -349,6 +358,14 @@ private fun MemorizeApp() {
             voiceRecognizer.stopListening()
             showCompletionDialog = true
             pendingReviewCompletion = false
+        }
+    }
+
+    LaunchedEffect(dueVerses, upcomingVerses, context) {
+        snapshotFlow {
+            Pair(dueVerses.toList(), upcomingVerses.toList())
+        }.collectLatest { (savedDueVerses, savedUpcomingVerses) ->
+            savePersistedVerseState(context, savedDueVerses, savedUpcomingVerses)
         }
     }
 
@@ -2315,6 +2332,82 @@ private fun matchRecognizedWords(
 
 private fun normalizeToken(token: String): String =
     token.lowercase(Locale.US).replace(Regex("[^\\p{L}\\p{N}]"), "")
+
+private const val VERSE_PREFS_NAME = "bible_memorize_verse_store"
+private const val DUE_VERSES_KEY = "due_verses"
+private const val UPCOMING_VERSES_KEY = "upcoming_verses"
+
+private fun loadPersistedVerseState(context: android.content.Context): Pair<List<Verse>, List<Verse>> {
+    val preferences = context.getSharedPreferences(VERSE_PREFS_NAME, android.content.Context.MODE_PRIVATE)
+    val dueVersesJson = preferences.getString(DUE_VERSES_KEY, null)
+    val upcomingVersesJson = preferences.getString(UPCOMING_VERSES_KEY, null)
+
+    if (dueVersesJson.isNullOrBlank() && upcomingVersesJson.isNullOrBlank()) {
+        return starterVerses.take(1) to starterVerses.drop(1)
+    }
+
+    val dueVerses = dueVersesJson.toVerseList()
+    val upcomingVerses = upcomingVersesJson.toVerseList()
+    if (dueVerses.isEmpty() && upcomingVerses.isEmpty()) {
+        return starterVerses.take(1) to starterVerses.drop(1)
+    }
+
+    return dueVerses to upcomingVerses
+}
+
+private fun savePersistedVerseState(
+    context: android.content.Context,
+    dueVerses: List<Verse>,
+    upcomingVerses: List<Verse>
+) {
+    val preferences = context.getSharedPreferences(VERSE_PREFS_NAME, android.content.Context.MODE_PRIVATE)
+    preferences.edit()
+        .putString(DUE_VERSES_KEY, dueVerses.toJson())
+        .putString(UPCOMING_VERSES_KEY, upcomingVerses.toJson())
+        .apply()
+}
+
+private fun String?.toVerseList(): List<Verse> {
+    if (this.isNullOrBlank()) return emptyList()
+
+    return runCatching {
+        val jsonArray = JSONArray(this)
+        buildList(jsonArray.length()) {
+            for (index in 0 until jsonArray.length()) {
+                val item = jsonArray.optJSONObject(index) ?: continue
+                add(
+                    Verse(
+                        id = item.optString("id"),
+                        reference = item.optString("reference"),
+                        translation = item.optString("translation"),
+                        text = item.optString("text"),
+                        prompt = item.optString("prompt")
+                    )
+                )
+            }
+        }.filter { verse ->
+            verse.id.isNotBlank() &&
+                verse.reference.isNotBlank() &&
+                verse.translation.isNotBlank() &&
+                verse.text.isNotBlank()
+        }
+    }.getOrDefault(emptyList())
+}
+
+private fun List<Verse>.toJson(): String =
+    JSONArray().apply {
+        forEach { verse ->
+            put(
+                JSONObject().apply {
+                    put("id", verse.id)
+                    put("reference", verse.reference)
+                    put("translation", verse.translation)
+                    put("text", verse.text)
+                    put("prompt", verse.prompt)
+                }
+            )
+        }
+    }.toString()
 
 private fun mergeRecognizedText(existing: String, incoming: String): String {
     val current = existing.trim()
