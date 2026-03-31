@@ -175,6 +175,11 @@ private data class DragState(
     val position: Offset
 )
 
+private data class PendingDelete(
+    val verse: Verse,
+    val section: VerseSection
+)
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -208,6 +213,7 @@ private fun MemorizeApp() {
     var reviewCompleted by remember { mutableStateOf(false) }
     var showCompletionDialog by remember { mutableStateOf(false) }
     var pendingReviewCompletion by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<PendingDelete?>(null) }
     var voiceLevel by remember { mutableStateOf(0f) }
     val dueVerses = remember { mutableStateListOf(starterVerses.first()) }
     val upcomingVerses = remember { mutableStateListOf(*starterVerses.drop(1).toTypedArray()) }
@@ -330,6 +336,29 @@ private fun MemorizeApp() {
                 onDismiss = { showCompletionDialog = false }
             )
         }
+        pendingDelete?.let { deleteState ->
+            DeleteVerseDialog(
+                verseReference = deleteState.verse.reference,
+                onConfirm = {
+                    when (deleteState.section) {
+                        VerseSection.DueNow -> {
+                            val removeIndex = dueVerses.indexOfFirst { it.id == deleteState.verse.id }
+                            if (removeIndex >= 0) {
+                                dueVerses.removeAt(removeIndex)
+                            }
+                        }
+                        VerseSection.Upcoming -> {
+                            val removeIndex = upcomingVerses.indexOfFirst { it.id == deleteState.verse.id }
+                            if (removeIndex >= 0) {
+                                upcomingVerses.removeAt(removeIndex)
+                            }
+                        }
+                    }
+                    pendingDelete = null
+                },
+                onDismiss = { pendingDelete = null }
+            )
+        }
         when (selectedTab) {
             BottomTab.Review -> {
                 ReviewScreen(
@@ -373,6 +402,12 @@ private fun MemorizeApp() {
                     onUpcomingRepeatToggle = { selectedVerse ->
                         val currentMode = upcomingRepeatModes[selectedVerse.id] ?: RepeatMode.Off
                         upcomingRepeatModes = upcomingRepeatModes + (selectedVerse.id to currentMode.next())
+                    },
+                    onDeleteDueVerse = { selectedVerse ->
+                        pendingDelete = PendingDelete(selectedVerse, VerseSection.DueNow)
+                    },
+                    onDeleteUpcomingVerse = { selectedVerse ->
+                        pendingDelete = PendingDelete(selectedVerse, VerseSection.Upcoming)
                     },
                     onNextVerse = {
                         if (dueVerses.size > 1) {
@@ -488,6 +523,8 @@ private fun ReviewScreen(
     onHideMore: () -> Unit,
     onRepeatToggle: (Verse) -> Unit,
     onUpcomingRepeatToggle: (Verse) -> Unit,
+    onDeleteDueVerse: (Verse) -> Unit,
+    onDeleteUpcomingVerse: (Verse) -> Unit,
     onNextVerse: () -> Unit,
     onExitReview: () -> Unit,
     onPreviousVerse: () -> Unit,
@@ -569,7 +606,7 @@ private fun ReviewScreen(
                                 onSpeak = { onSpeak(dueVerse) },
                                 onHideMore = onHideMore,
                                 onRepeatToggle = { onRepeatToggle(dueVerse) },
-                                onNextVerse = onNextVerse,
+                                onNextVerse = { onDeleteDueVerse(dueVerse) },
                                 repeatMode = dueRepeatModes[dueVerse.id] ?: RepeatMode.Off,
                                 isLooping = activeDueLooping &&
                                     dueVerse.id == verse.id &&
@@ -619,12 +656,7 @@ private fun ReviewScreen(
                                 onSpeak = { onUpcomingSpeak(upcomingVerse) },
                                 onHideMore = {},
                                 onRepeatToggle = { onUpcomingRepeatToggle(upcomingVerse) },
-                                onNextVerse = {
-                                    val removeIndex = upcomingVerses.indexOfFirst { it.id == upcomingVerse.id }
-                                    if (removeIndex >= 0) {
-                                        upcomingVerses.removeAt(removeIndex)
-                                    }
-                                },
+                                onNextVerse = { onDeleteUpcomingVerse(upcomingVerse) },
                                 repeatMode = upcomingRepeatModes[upcomingVerse.id] ?: RepeatMode.Off,
                                 isLooping = false
                             )
@@ -1368,6 +1400,47 @@ private fun CompletionDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = "You completed the verse review.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        containerColor = MaterialTheme.colorScheme.surface,
+        titleContentColor = MaterialTheme.colorScheme.onBackground,
+        textContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}
+
+@Composable
+private fun DeleteVerseDialog(
+    verseReference: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            Button(onClick = onConfirm) {
+                Text("OK")
+            }
+        },
+        dismissButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Text("Cancel")
+            }
+        },
+        title = {
+            Text(
+                text = "Delete Verse",
+                color = MaterialTheme.colorScheme.onBackground
+            )
+        },
+        text = {
+            Text(
+                text = "Delete $verseReference?",
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         },
