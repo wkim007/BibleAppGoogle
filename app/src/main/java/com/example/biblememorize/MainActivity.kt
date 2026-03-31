@@ -196,12 +196,14 @@ private fun MemorizeApp() {
             )
         },
         onError = {
-            recognizedText = it
+            recognizedText = ""
             voiceLevel = 0f
         },
         onListeningStateChanged = { listening ->
-            if (listening && recognizedText.isBlank()) {
+            if (listening) {
                 recognizedText = "Listening..."
+            } else {
+                recognizedText = ""
             }
         },
         onLevelChanged = { voiceLevel = it }
@@ -240,6 +242,7 @@ private fun MemorizeApp() {
         if (reviewFullyMatched && !reviewCompleted) {
             reviewCompleted = true
             passCount += 1
+            recognizedText = ""
             voiceRecognizer.stopListening()
         }
     }
