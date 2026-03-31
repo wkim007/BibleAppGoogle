@@ -167,6 +167,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun MemorizeApp() {
     var verseIndex by remember { mutableIntStateOf(0) }
+    var passCount by remember { mutableIntStateOf(0) }
     var hiddenWordCount by remember { mutableIntStateOf(0) }
     var selectedTab by remember { mutableStateOf(BottomTab.Review) }
     var selectedBibleVersion by remember { mutableStateOf("NKJV") }
@@ -177,12 +178,12 @@ private fun MemorizeApp() {
     var dueRepeatMode by remember { mutableStateOf(RepeatMode.Off) }
     var recognizedText by remember { mutableStateOf("") }
     var matchedIndices by remember { mutableStateOf(setOf<Int>()) }
+    var reviewCompleted by remember { mutableStateOf(false) }
     var voiceLevel by remember { mutableStateOf(0f) }
     val verse = starterVerses[verseIndex]
     val verseWords = remember(verse.reference) { verse.text.split(" ") }
     val reviewHiddenIndices = remember(verse.reference) { buildReviewHiddenIndices(verseWords) }
-    val dueCount = starterVerses.size - verseIndex
-    val passCount = verseIndex
+    val dueCount = 1
     val reviewScope = rememberCoroutineScope()
     val speaker = rememberVerseSpeaker(speechRate)
     val voiceRecognizer = rememberVoiceRecognizer(
@@ -209,6 +210,8 @@ private fun MemorizeApp() {
         targetValue = if (verseWords.isEmpty()) 0f else hiddenWordCount.toFloat() / verseWords.size.toFloat(),
         label = "memorizeProgress"
     )
+    val reviewFullyMatched = reviewHiddenIndices.isNotEmpty() && reviewHiddenIndices.all { it in matchedIndices }
+    val displayProgressPercent = if (reviewCompleted || reviewFullyMatched) 100 else (progress * 100).roundToInt()
     val context = LocalContext.current
     val microphonePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -224,10 +227,19 @@ private fun MemorizeApp() {
         showReviewAnswer = false
         recognizedText = ""
         matchedIndices = emptySet()
+        reviewCompleted = false
         voiceLevel = 0f
         if (!isReviewing) {
             repeatMode = RepeatMode.Off
             speaker.stop()
+            voiceRecognizer.stopListening()
+        }
+    }
+
+    LaunchedEffect(reviewFullyMatched) {
+        if (reviewFullyMatched && !reviewCompleted) {
+            reviewCompleted = true
+            passCount += 1
             voiceRecognizer.stopListening()
         }
     }
@@ -248,7 +260,7 @@ private fun MemorizeApp() {
                     verse = verse,
                     dueCount = dueCount,
                     passCount = passCount,
-                    progressPercent = (progress * 100).roundToInt(),
+                    progressPercent = displayProgressPercent,
                     onPlay = {
                         val totalWords = verseWords.size
                         hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
@@ -264,6 +276,7 @@ private fun MemorizeApp() {
                         verseIndex = (verseIndex + 1) % starterVerses.size
                         hiddenWordCount = 0
                         dueRepeatMode = RepeatMode.Off
+                        reviewCompleted = false
                     },
                     dueRepeatMode = dueRepeatMode,
                     dueIsLooping = speaker.isLooping && dueRepeatMode == RepeatMode.Infinite,
@@ -276,6 +289,7 @@ private fun MemorizeApp() {
                     onPreviousVerse = {
                         verseIndex = if (verseIndex == 0) starterVerses.lastIndex else verseIndex - 1
                         hiddenWordCount = 0
+                        reviewCompleted = false
                     },
                     reviewContent = {
                         ReviewPracticeCard(
@@ -866,7 +880,7 @@ private fun StatCard(
             }
             Text(
                 text = value,
-                style = MaterialTheme.typography.headlineMedium,
+                style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onBackground
             )
@@ -1321,6 +1335,7 @@ private fun rememberVoiceRecognizer(
     onLevelChanged: (Float) -> Unit
 ): VoiceRecognizerController {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val currentOnResult by rememberUpdatedState(onResult)
     val currentOnError by rememberUpdatedState(onError)
     val currentOnListeningStateChanged by rememberUpdatedState(onListeningStateChanged)
@@ -1336,9 +1351,13 @@ private fun rememberVoiceRecognizer(
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 30000L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 30000L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 30000L)
+            putExtra(
+                RecognizerIntent.EXTRA_SEGMENTED_SESSION,
+                RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS
+            )
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 120000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 120000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 120000L)
         }
 
     DisposableEffect(context) {
@@ -1375,6 +1394,7 @@ private fun rememberVoiceRecognizer(
                         SpeechRecognizer.ERROR_NO_MATCH,
                         SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
                             currentOnError("Didn't catch that. Try speaking again.")
+                            shouldKeepListening = false
                         }
                         SpeechRecognizer.ERROR_CLIENT,
                         SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> {
@@ -1386,13 +1406,16 @@ private fun rememberVoiceRecognizer(
                         SpeechRecognizer.ERROR_NETWORK,
                         SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> {
                             currentOnError("Speech recognition network error.")
+                            shouldKeepListening = false
                         }
                         SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
                         SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> {
                             currentOnError("Speech recognition language is not available.")
+                            shouldKeepListening = false
                         }
                         else -> {
                             currentOnError("Speech recognition is unavailable right now.")
+                            shouldKeepListening = false
                         }
                     }
                 }
@@ -1406,6 +1429,12 @@ private fun rememberVoiceRecognizer(
                         ?.firstOrNull()
                         .orEmpty()
                     currentOnResult(spokenText)
+                    if (spokenText.isNotBlank() && shouldKeepListening) {
+                        scope.launch {
+                            delay(200)
+                            speechRecognizer?.startListening(buildRecognizerIntent())
+                        }
+                    }
                 }
 
                 override fun onPartialResults(partialResults: Bundle?) {
