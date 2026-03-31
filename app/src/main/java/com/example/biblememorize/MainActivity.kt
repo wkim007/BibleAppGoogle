@@ -158,6 +158,11 @@ private enum class ReviewLevel(val label: String) {
     Hard("Hard")
 }
 
+private enum class AddVerseMicAction {
+    Transcribe,
+    Record
+}
+
 private val starterVerses = listOf(
     Verse(
         id = "joshua-1-9",
@@ -1144,7 +1149,8 @@ private fun AddVerseScreen(
     var verseText by remember { mutableStateOf("") }
     var dictatedPrefix by remember { mutableStateOf("") }
     var recordedAudioPath by remember { mutableStateOf<String?>(null) }
-    var pendingRecordingStart by remember { mutableStateOf(false) }
+    var pendingMicAction by remember { mutableStateOf<AddVerseMicAction?>(null) }
+    var addTranscribeLevel by remember { mutableStateOf(0f) }
     var addVoiceStatus by remember { mutableStateOf("") }
     val maxVerse = selectedBook.knownVerseCounts[selectedChapter] ?: 50
     val context = LocalContext.current
@@ -1169,35 +1175,45 @@ private fun AddVerseScreen(
             if (message.contains("Microphone permission", ignoreCase = true)) {
                 addVoiceStatus = message
             }
-            pendingRecordingStart = false
+            addTranscribeLevel = 0f
         },
         onListeningStateChanged = { listening ->
-            if (listening && pendingRecordingStart && !addAudioRecorder.isRecording) {
-                val recordingStarted = recordedAudioPath?.let { addAudioRecorder.startRecording(it) } == true
-                pendingRecordingStart = false
-                if (recordingStarted) {
-                    addVoiceStatus = "Recording voice..."
-                } else {
-                    recordedAudioPath = null
-                    addVoiceStatus = "Voice text input started. Audio recording is unavailable on this device."
-                }
+            if (listening) {
+                addVoiceStatus = "Transcribing voice..."
+            } else if (pendingMicAction == AddVerseMicAction.Transcribe || addVoiceStatus == "Transcribing voice...") {
+                pendingMicAction = null
+                addTranscribeLevel = 0f
             }
         },
-        onLevelChanged = { _ -> }
+        onLevelChanged = { addTranscribeLevel = it }
     )
     val addVoicePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            recordedAudioPath?.let { deleteAudioRecordingIfExists(it) }
-            recordedAudioPath = createVerseRecordingPath(context)
-            dictatedPrefix = verseText.trim()
-            pendingRecordingStart = true
-            addVoiceStatus = "Starting voice input..."
-            addVoiceRecognizer.startListening()
+            when (pendingMicAction) {
+                AddVerseMicAction.Transcribe -> {
+                    dictatedPrefix = verseText.trim()
+                    addVoiceStatus = "Starting voice input..."
+                    addVoiceRecognizer.startListening()
+                }
+                AddVerseMicAction.Record -> {
+                    recordedAudioPath?.let { deleteAudioRecordingIfExists(it) }
+                    recordedAudioPath = createVerseRecordingPath(context)
+                    val recordingStarted = recordedAudioPath?.let { addAudioRecorder.startRecording(it) } == true
+                    addVoiceStatus = if (recordingStarted) {
+                        "Recording voice..."
+                    } else {
+                        recordedAudioPath = null
+                        "Audio recording is unavailable on this device."
+                    }
+                }
+                null -> Unit
+            }
         } else {
             addVoiceStatus = "Microphone permission is required."
         }
+        pendingMicAction = null
     }
 
     if (selectedVerseStart > maxVerse) selectedVerseStart = maxVerse
@@ -1231,8 +1247,9 @@ private fun AddVerseScreen(
                 RoundedTextButton(
                     "Cancel",
                     onClick = {
-                        pendingRecordingStart = false
+                        pendingMicAction = null
                         addVoiceStatus = ""
+                        addTranscribeLevel = 0f
                         addAudioRecorder.stopRecording()
                         addVoiceRecognizer.stopListening()
                         recordedAudioPath?.let { deleteAudioRecordingIfExists(it) }
@@ -1253,8 +1270,9 @@ private fun AddVerseScreen(
                                 append(selectedVerseEnd)
                             }
                         }
-                        pendingRecordingStart = false
+                        pendingMicAction = null
                         addVoiceStatus = ""
+                        addTranscribeLevel = 0f
                         addAudioRecorder.stopRecording()
                         addVoiceRecognizer.stopListening()
                         onSave(
@@ -1383,45 +1401,80 @@ private fun AddVerseScreen(
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onBackground
                         )
-                        SmallIconButton(
-                            icon = Icons.Filled.KeyboardVoice,
-                            label = stringResource(R.string.start_voice_input),
-                            tint = if (addAudioRecorder.isRecording || addVoiceRecognizer.isListening) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onBackground
-                            },
-                            onClick = {
-                                if (addAudioRecorder.isRecording || addVoiceRecognizer.isListening) {
-                                    pendingRecordingStart = false
-                                    addAudioRecorder.stopRecording()
-                                    addVoiceRecognizer.stopListening()
-                                    addVoiceStatus = if (!recordedAudioPath.isNullOrBlank()) {
-                                        "Voice recording saved."
-                                    } else {
-                                        ""
-                                    }
-                                } else if (
-                                    ContextCompat.checkSelfPermission(
-                                        context,
-                                        Manifest.permission.RECORD_AUDIO
-                                ) == PackageManager.PERMISSION_GRANTED
-                                ) {
-                                    recordedAudioPath?.let { deleteAudioRecordingIfExists(it) }
-                                    recordedAudioPath = createVerseRecordingPath(context)
-                                    dictatedPrefix = verseText.trim()
-                                    pendingRecordingStart = true
-                                    addVoiceStatus = "Starting voice input..."
-                                    addVoiceRecognizer.startListening()
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            SmallIconButton(
+                                icon = Icons.Filled.KeyboardVoice,
+                                label = "Transcribe verse text",
+                                tint = if (addVoiceRecognizer.isListening) {
+                                    MaterialTheme.colorScheme.primary
                                 } else {
-                                    addVoicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    MaterialTheme.colorScheme.onBackground
+                                },
+                                onClick = {
+                                    if (addVoiceRecognizer.isListening) {
+                                        addVoiceRecognizer.stopListening()
+                                        addVoiceStatus = ""
+                                        addTranscribeLevel = 0f
+                                    } else if (
+                                        ContextCompat.checkSelfPermission(
+                                            context,
+                                            Manifest.permission.RECORD_AUDIO
+                                        ) == PackageManager.PERMISSION_GRANTED
+                                    ) {
+                                        dictatedPrefix = verseText.trim()
+                                        addAudioRecorder.stopRecording()
+                                        pendingMicAction = null
+                                        addVoiceStatus = "Starting voice input..."
+                                        addVoiceRecognizer.startListening()
+                                    } else {
+                                        pendingMicAction = AddVerseMicAction.Transcribe
+                                        addVoicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    }
                                 }
-                            }
-                        )
+                            )
+                            SmallIconButton(
+                                icon = Icons.Filled.GraphicEq,
+                                label = "Record voice file",
+                                tint = if (addAudioRecorder.isRecording) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onBackground
+                                },
+                                onClick = {
+                                    if (addAudioRecorder.isRecording) {
+                                        addAudioRecorder.stopRecording()
+                                        addVoiceStatus = if (!recordedAudioPath.isNullOrBlank()) {
+                                            "Voice recording saved."
+                                        } else {
+                                            ""
+                                        }
+                                    } else if (
+                                        ContextCompat.checkSelfPermission(
+                                            context,
+                                            Manifest.permission.RECORD_AUDIO
+                                        ) == PackageManager.PERMISSION_GRANTED
+                                    ) {
+                                        addVoiceRecognizer.stopListening()
+                                        recordedAudioPath?.let { deleteAudioRecordingIfExists(it) }
+                                        recordedAudioPath = createVerseRecordingPath(context)
+                                        val recordingStarted = recordedAudioPath?.let { addAudioRecorder.startRecording(it) } == true
+                                        addVoiceStatus = if (recordingStarted) {
+                                            "Recording voice..."
+                                        } else {
+                                            recordedAudioPath = null
+                                            "Audio recording is unavailable on this device."
+                                        }
+                                    } else {
+                                        pendingMicAction = AddVerseMicAction.Record
+                                        addVoicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    }
+                                }
+                            )
+                        }
                     }
-                    if (addAudioRecorder.isRecording) {
+                    if (addVoiceRecognizer.isListening || addAudioRecorder.isRecording) {
                         VoiceLevelIndicator(
-                            level = addAudioRecorder.level,
+                            level = if (addVoiceRecognizer.isListening) addTranscribeLevel else addAudioRecorder.level,
                             active = true
                         )
                     }
