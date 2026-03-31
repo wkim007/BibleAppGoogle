@@ -1,6 +1,9 @@
 package com.example.biblememorize
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -8,6 +11,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -113,6 +117,7 @@ import java.util.Locale
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.roundToInt
+import kotlin.math.ceil
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -140,6 +145,12 @@ private enum class VerseContentType(val label: String) {
 
 private enum class VerseDifficulty(val label: String) {
     Easy("Easy"),
+    Medium("Medium"),
+    Hard("Hard")
+}
+
+private enum class ReviewLevel(val label: String) {
+    Standard("Standard"),
     Medium("Medium"),
     Hard("Hard")
 }
@@ -327,6 +338,8 @@ private fun MemorizeApp() {
     var selectedTab by remember { mutableStateOf(BottomTab.Review) }
     var selectedBibleVersion by remember { mutableStateOf("NKJV") }
     var speechRate by remember { mutableStateOf(0.9f) }
+    var reviewLevel by remember { mutableStateOf(ReviewLevel.Standard) }
+    var keepScreenAwake by remember { mutableStateOf(false) }
     var showAddVersePage by remember { mutableStateOf(false) }
     var isReviewing by remember { mutableStateOf(false) }
     var showReviewAnswer by remember { mutableStateOf(false) }
@@ -353,7 +366,9 @@ private fun MemorizeApp() {
     val passCount = versePassCounts.values.sum()
     val completedDueCount = dueVerses.count { dueVerse -> (versePassCounts[dueVerse.id] ?: 0) > 0 }
     val verseWords = remember(verse.id, verse.reference, verse.text) { verse.text.split(" ") }
-    val reviewHiddenIndices = remember(verse.id, verse.reference, verse.text) { buildReviewHiddenIndices(verseWords) }
+    val reviewHiddenIndices = remember(verse.id, verse.reference, verse.text, reviewLevel) {
+        buildReviewHiddenIndices(verseWords, reviewLevel)
+    }
     val dueCount = dueVerses.size
     val reviewScope = rememberCoroutineScope()
     val speaker = rememberVerseSpeaker(speechRate)
@@ -408,6 +423,21 @@ private fun MemorizeApp() {
             voiceRecognizer.startListening()
         } else {
             recognizedText = "Microphone permission is required."
+        }
+    }
+
+    DisposableEffect(keepScreenAwake, context) {
+        val activity = context.findActivity()
+        if (keepScreenAwake) {
+            activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+
+        onDispose {
+            if (!keepScreenAwake) {
+                activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
         }
     }
 
@@ -642,15 +672,19 @@ private fun MemorizeApp() {
                     ProgressScreen(innerPadding = innerPadding)
                 }
                 BottomTab.Settings -> {
-                    SettingsScreen(
-                        innerPadding = innerPadding,
-                        selectedBibleVersion = selectedBibleVersion,
-                        onVersionSelected = { selectedBibleVersion = it },
-                        speechRate = speechRate,
-                        onSpeechRateChange = { speechRate = it }
-                    )
-                }
+                SettingsScreen(
+                    innerPadding = innerPadding,
+                    selectedBibleVersion = selectedBibleVersion,
+                    onVersionSelected = { selectedBibleVersion = it },
+                    speechRate = speechRate,
+                    onSpeechRateChange = { speechRate = it },
+                    reviewLevel = reviewLevel,
+                    onReviewLevelChange = { reviewLevel = it },
+                    keepScreenAwake = keepScreenAwake,
+                    onKeepScreenAwakeChange = { keepScreenAwake = it }
+                )
             }
+        }
 
             if (showCompletionDialog) {
                 CompletionDialog(
@@ -1582,7 +1616,11 @@ private fun SettingsScreen(
     selectedBibleVersion: String,
     onVersionSelected: (String) -> Unit,
     speechRate: Float,
-    onSpeechRateChange: (Float) -> Unit
+    onSpeechRateChange: (Float) -> Unit,
+    reviewLevel: ReviewLevel,
+    onReviewLevelChange: (ReviewLevel) -> Unit,
+    keepScreenAwake: Boolean,
+    onKeepScreenAwakeChange: (Boolean) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
 
@@ -1691,6 +1729,83 @@ private fun SettingsScreen(
             speechRate = speechRate,
             onSpeechRateChange = onSpeechRateChange
         )
+        Text(
+            text = "Display",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        DisplaySettingsCard(
+            reviewLevel = reviewLevel,
+            onReviewLevelChange = onReviewLevelChange,
+            keepScreenAwake = keepScreenAwake,
+            onKeepScreenAwakeChange = onKeepScreenAwakeChange
+        )
+    }
+}
+
+@Composable
+private fun DisplaySettingsCard(
+    reviewLevel: ReviewLevel,
+    onReviewLevelChange: (ReviewLevel) -> Unit,
+    keepScreenAwake: Boolean,
+    onKeepScreenAwakeChange: (Boolean) -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            SelectionDropdownField(
+                label = "Review Level",
+                selectedValue = reviewLevel.label,
+                options = ReviewLevel.entries.map { it.label }
+            ) { selected ->
+                onReviewLevelChange(ReviewLevel.entries.first { it.label == selected })
+            }
+            Text(
+                text = "Standard uses the current hiding pattern, Medium hides about 80% of the verse, and Hard hides 100% of the verse.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(Color.White.copy(alpha = 0.10f))
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Keep Screen Awake",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                Switch(
+                    checked = keepScreenAwake,
+                    onCheckedChange = onKeepScreenAwakeChange
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(Color.White.copy(alpha = 0.10f))
+            )
+            Text(
+                text = "When enabled, the screen stays on while this app is open.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 
@@ -2439,11 +2554,41 @@ private fun VersePreview(verse: Verse, hiddenWordCount: Int) {
     )
 }
 
-private fun buildReviewHiddenIndices(words: List<String>): Set<Int> =
-    words.mapIndexedNotNull { index, word ->
-        val normalized = normalizeToken(word)
-        if (index % 3 != 1 && normalized.length > 2) index else null
-    }.toSet()
+private fun buildReviewHiddenIndices(
+    words: List<String>,
+    reviewLevel: ReviewLevel
+): Set<Int> {
+    val eligibleIndices = words.mapIndexedNotNull { index, word ->
+        if (normalizeToken(word).isNotBlank()) index else null
+    }
+
+    if (eligibleIndices.isEmpty()) return emptySet()
+
+    return when (reviewLevel) {
+        ReviewLevel.Standard -> {
+            words.mapIndexedNotNull { index, word ->
+                val normalized = normalizeToken(word)
+                if (index % 3 != 1 && normalized.length > 2) index else null
+            }.toSet()
+        }
+        ReviewLevel.Medium -> {
+            val targetCount = ceil(eligibleIndices.size * 0.8f).toInt().coerceAtMost(eligibleIndices.size)
+            if (targetCount >= eligibleIndices.size) {
+                eligibleIndices.toSet()
+            } else {
+                val step = eligibleIndices.size.toFloat() / targetCount.toFloat()
+                buildSet {
+                    for (pickIndex in 0 until targetCount) {
+                        val sourceIndex = ((pickIndex * step) + (step / 2f)).toInt()
+                            .coerceIn(0, eligibleIndices.lastIndex)
+                        add(eligibleIndices[sourceIndex])
+                    }
+                }
+            }
+        }
+        ReviewLevel.Hard -> eligibleIndices.toSet()
+    }
+}
 
 private fun matchRecognizedWords(
     verseWords: List<String>,
@@ -2623,6 +2768,12 @@ private fun bibleVersionFontFamily(version: String): FontFamily =
     } else {
         FontFamily.Default
     }
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
 
 private fun mergeRecognizedText(existing: String, incoming: String): String {
     val current = existing.trim()
