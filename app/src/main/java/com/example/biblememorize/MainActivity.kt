@@ -69,6 +69,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.LaunchedEffect
@@ -118,6 +119,23 @@ data class Verse(
     val prompt: String
 )
 
+private data class BibleBook(
+    val name: String,
+    val chapterCount: Int,
+    val knownVerseCounts: Map<Int, Int> = emptyMap()
+)
+
+private enum class VerseContentType(val label: String) {
+    DueNow("Due Now"),
+    Upcoming("Upcoming")
+}
+
+private enum class VerseDifficulty(val label: String) {
+    Easy("Easy"),
+    Medium("Medium"),
+    Hard("Hard")
+}
+
 private val starterVerses = listOf(
     Verse(
         id = "joshua-1-9",
@@ -143,6 +161,31 @@ private val starterVerses = listOf(
 )
 
 private val bibleVersions = listOf("KJV", "NKJV", "개역한글", "中文", "Español", "日本語", "Deutsch")
+private val bibleBooks = listOf(
+    BibleBook("Genesis", 50, mapOf(1 to 31)),
+    BibleBook("Exodus", 40), BibleBook("Leviticus", 27), BibleBook("Numbers", 36),
+    BibleBook("Deuteronomy", 34), BibleBook("Joshua", 24), BibleBook("Judges", 21),
+    BibleBook("Ruth", 4), BibleBook("1 Samuel", 31), BibleBook("2 Samuel", 24),
+    BibleBook("1 Kings", 22), BibleBook("2 Kings", 25), BibleBook("1 Chronicles", 29),
+    BibleBook("2 Chronicles", 36), BibleBook("Ezra", 10), BibleBook("Nehemiah", 13),
+    BibleBook("Esther", 10), BibleBook("Job", 42), BibleBook("Psalms", 150),
+    BibleBook("Proverbs", 31), BibleBook("Ecclesiastes", 12), BibleBook("Song of Solomon", 8),
+    BibleBook("Isaiah", 66), BibleBook("Jeremiah", 52), BibleBook("Lamentations", 5),
+    BibleBook("Ezekiel", 48), BibleBook("Daniel", 12), BibleBook("Hosea", 14),
+    BibleBook("Joel", 3), BibleBook("Amos", 9), BibleBook("Obadiah", 1),
+    BibleBook("Jonah", 4), BibleBook("Micah", 7), BibleBook("Nahum", 3),
+    BibleBook("Habakkuk", 3), BibleBook("Zephaniah", 3), BibleBook("Haggai", 2),
+    BibleBook("Zechariah", 14), BibleBook("Malachi", 4), BibleBook("Matthew", 28),
+    BibleBook("Mark", 16), BibleBook("Luke", 24), BibleBook("John", 21, mapOf(1 to 51)),
+    BibleBook("Acts", 28), BibleBook("Romans", 16), BibleBook("1 Corinthians", 16),
+    BibleBook("2 Corinthians", 13), BibleBook("Galatians", 6), BibleBook("Ephesians", 6),
+    BibleBook("Philippians", 4), BibleBook("Colossians", 4), BibleBook("1 Thessalonians", 5),
+    BibleBook("2 Thessalonians", 3), BibleBook("1 Timothy", 6), BibleBook("2 Timothy", 4),
+    BibleBook("Titus", 3), BibleBook("Philemon", 1), BibleBook("Hebrews", 13),
+    BibleBook("James", 5), BibleBook("1 Peter", 5), BibleBook("2 Peter", 3),
+    BibleBook("1 John", 5), BibleBook("2 John", 1), BibleBook("3 John", 1),
+    BibleBook("Jude", 1), BibleBook("Revelation", 22)
+)
 
 private enum class BottomTab(val label: String) {
     Review("Review"),
@@ -203,6 +246,7 @@ private fun MemorizeApp() {
     var selectedTab by remember { mutableStateOf(BottomTab.Review) }
     var selectedBibleVersion by remember { mutableStateOf("NKJV") }
     var speechRate by remember { mutableStateOf(0.9f) }
+    var showAddVersePage by remember { mutableStateOf(false) }
     var isReviewing by remember { mutableStateOf(false) }
     var showReviewAnswer by remember { mutableStateOf(false) }
     var repeatMode by remember { mutableStateOf(RepeatMode.Off) }
@@ -331,170 +375,188 @@ private fun MemorizeApp() {
             )
         }
     ) { innerPadding ->
-        if (showCompletionDialog) {
-            CompletionDialog(
-                onDismiss = { showCompletionDialog = false }
-            )
-        }
-        pendingDelete?.let { deleteState ->
-            DeleteVerseDialog(
-                verseReference = deleteState.verse.reference,
-                onConfirm = {
-                    when (deleteState.section) {
-                        VerseSection.DueNow -> {
-                            val removeIndex = dueVerses.indexOfFirst { it.id == deleteState.verse.id }
-                            if (removeIndex >= 0) {
-                                dueVerses.removeAt(removeIndex)
+        Box(modifier = Modifier.fillMaxSize()) {
+            when (selectedTab) {
+                BottomTab.Review -> {
+                    ReviewScreen(
+                        innerPadding = innerPadding,
+                        verse = verse,
+                        dueCount = dueCount,
+                        passCount = passCount,
+                        progressPercent = displayProgressPercent,
+                        onResetReview = resetReviewSession,
+                        dueVerses = dueVerses,
+                        upcomingVerses = upcomingVerses,
+                        dueRepeatModes = dueRepeatModes,
+                        upcomingRepeatModes = upcomingRepeatModes,
+                        activeDueLooping = speaker.isLooping,
+                        onMoveVerse = moveVerseBetweenSections,
+                        onAddVerse = { showAddVersePage = true },
+                        onPlay = {
+                            val totalWords = verseWords.size
+                            hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
+                            isReviewing = true
+                        },
+                        onSpeak = { selectedVerse ->
+                            speaker.speak(
+                                selectedVerse,
+                                dueRepeatModes[selectedVerse.id] ?: RepeatMode.Off
+                            )
+                        },
+                        onHideMore = {
+                            val totalWords = verseWords.size
+                            hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
+                        },
+                        onRepeatToggle = { selectedVerse ->
+                            val currentMode = dueRepeatModes[selectedVerse.id] ?: RepeatMode.Off
+                            dueRepeatModes = dueRepeatModes + (selectedVerse.id to currentMode.next())
+                        },
+                        onUpcomingSpeak = { selectedVerse ->
+                            speaker.speak(
+                                selectedVerse,
+                                upcomingRepeatModes[selectedVerse.id] ?: RepeatMode.Off
+                            )
+                        },
+                        onUpcomingRepeatToggle = { selectedVerse ->
+                            val currentMode = upcomingRepeatModes[selectedVerse.id] ?: RepeatMode.Off
+                            upcomingRepeatModes = upcomingRepeatModes + (selectedVerse.id to currentMode.next())
+                        },
+                        onDeleteDueVerse = { selectedVerse ->
+                            pendingDelete = PendingDelete(selectedVerse, VerseSection.DueNow)
+                        },
+                        onDeleteUpcomingVerse = { selectedVerse ->
+                            pendingDelete = PendingDelete(selectedVerse, VerseSection.Upcoming)
+                        },
+                        onNextVerse = {
+                            if (dueVerses.size > 1) {
+                                val first = dueVerses.removeAt(0)
+                                dueVerses.add(first)
+                            } else if (dueVerses.isNotEmpty() && upcomingVerses.isNotEmpty()) {
+                                upcomingVerses.add(dueVerses.removeAt(0))
+                                dueVerses.add(upcomingVerses.removeAt(0))
                             }
-                        }
-                        VerseSection.Upcoming -> {
-                            val removeIndex = upcomingVerses.indexOfFirst { it.id == deleteState.verse.id }
-                            if (removeIndex >= 0) {
-                                upcomingVerses.removeAt(removeIndex)
+                            hiddenWordCount = 0
+                            reviewCompleted = false
+                            pendingReviewCompletion = false
+                        },
+                        hiddenWordCount = hiddenWordCount,
+                        isReviewing = isReviewing,
+                        onExitReview = {
+                            isReviewing = false
+                            speaker.stop()
+                        },
+                        onPreviousVerse = {
+                            if (dueVerses.size > 1) {
+                                val last = dueVerses.removeAt(dueVerses.lastIndex)
+                                dueVerses.add(0, last)
+                            } else if (upcomingVerses.isNotEmpty()) {
+                                dueVerses.add(0, upcomingVerses.removeAt(upcomingVerses.lastIndex))
                             }
-                        }
-                    }
-                    pendingDelete = null
-                },
-                onDismiss = { pendingDelete = null }
-            )
-        }
-        when (selectedTab) {
-            BottomTab.Review -> {
-                ReviewScreen(
-                    innerPadding = innerPadding,
-                    verse = verse,
-                    dueCount = dueCount,
-                    passCount = passCount,
-                    progressPercent = displayProgressPercent,
-                    onResetReview = resetReviewSession,
-                    dueVerses = dueVerses,
-                    upcomingVerses = upcomingVerses,
-                    dueRepeatModes = dueRepeatModes,
-                    upcomingRepeatModes = upcomingRepeatModes,
-                    activeDueLooping = speaker.isLooping,
-                    onMoveVerse = moveVerseBetweenSections,
-                    onPlay = {
-                        val totalWords = verseWords.size
-                        hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
-                        isReviewing = true
-                    },
-                    onSpeak = { selectedVerse ->
-                        speaker.speak(
-                            selectedVerse,
-                            dueRepeatModes[selectedVerse.id] ?: RepeatMode.Off
-                        )
-                    },
-                    onHideMore = {
-                        val totalWords = verseWords.size
-                        hiddenWordCount = (hiddenWordCount + 2).coerceAtMost(totalWords)
-                    },
-                    onRepeatToggle = { selectedVerse ->
-                        val currentMode = dueRepeatModes[selectedVerse.id] ?: RepeatMode.Off
-                        dueRepeatModes = dueRepeatModes + (selectedVerse.id to currentMode.next())
-                    },
-                    onUpcomingSpeak = { selectedVerse ->
-                        speaker.speak(
-                            selectedVerse,
-                            upcomingRepeatModes[selectedVerse.id] ?: RepeatMode.Off
-                        )
-                    },
-                    onUpcomingRepeatToggle = { selectedVerse ->
-                        val currentMode = upcomingRepeatModes[selectedVerse.id] ?: RepeatMode.Off
-                        upcomingRepeatModes = upcomingRepeatModes + (selectedVerse.id to currentMode.next())
-                    },
-                    onDeleteDueVerse = { selectedVerse ->
-                        pendingDelete = PendingDelete(selectedVerse, VerseSection.DueNow)
-                    },
-                    onDeleteUpcomingVerse = { selectedVerse ->
-                        pendingDelete = PendingDelete(selectedVerse, VerseSection.Upcoming)
-                    },
-                    onNextVerse = {
-                        if (dueVerses.size > 1) {
-                            val first = dueVerses.removeAt(0)
-                            dueVerses.add(first)
-                        } else if (dueVerses.isNotEmpty() && upcomingVerses.isNotEmpty()) {
-                            upcomingVerses.add(dueVerses.removeAt(0))
-                            dueVerses.add(upcomingVerses.removeAt(0))
-                        }
-                        hiddenWordCount = 0
-                        reviewCompleted = false
-                        pendingReviewCompletion = false
-                    },
-                    hiddenWordCount = hiddenWordCount,
-                    isReviewing = isReviewing,
-                    onExitReview = {
-                        isReviewing = false
-                        speaker.stop()
-                    },
-                    onPreviousVerse = {
-                        if (dueVerses.size > 1) {
-                            val last = dueVerses.removeAt(dueVerses.lastIndex)
-                            dueVerses.add(0, last)
-                        } else if (upcomingVerses.isNotEmpty()) {
-                            dueVerses.add(0, upcomingVerses.removeAt(upcomingVerses.lastIndex))
-                        }
-                        hiddenWordCount = 0
-                        reviewCompleted = false
-                        pendingReviewCompletion = false
-                    },
-                    reviewContent = {
-                        ReviewPracticeCard(
-                            verse = verse,
-                            verseWords = verseWords,
-                            hiddenIndices = reviewHiddenIndices,
-                            matchedIndices = matchedIndices,
-                            isCompleted = reviewCompleted,
-                            showAnswer = showReviewAnswer,
-                            repeatMode = repeatMode,
-                            isLooping = speaker.isLooping,
-                            isListening = voiceRecognizer.isListening,
-                            voiceLevel = voiceLevel,
-                            onAnswerClick = {
-                                recognizedText = ""
-                                reviewScope.launch {
-                                    showReviewAnswer = true
-                                    delay(1000)
-                                    showReviewAnswer = false
-                                }
-                            },
-                            onSpeakClick = {
-                                recognizedText = ""
-                                speaker.speak(verse, repeatMode)
-                            },
-                            onRepeatClick = {
-                                recognizedText = ""
-                                repeatMode = repeatMode.next()
-                            },
-                            onMicClick = {
-                                if (voiceRecognizer.isListening) {
+                            hiddenWordCount = 0
+                            reviewCompleted = false
+                            pendingReviewCompletion = false
+                        },
+                        reviewContent = {
+                            ReviewPracticeCard(
+                                verse = verse,
+                                verseWords = verseWords,
+                                hiddenIndices = reviewHiddenIndices,
+                                matchedIndices = matchedIndices,
+                                isCompleted = reviewCompleted,
+                                showAnswer = showReviewAnswer,
+                                repeatMode = repeatMode,
+                                isLooping = speaker.isLooping,
+                                isListening = voiceRecognizer.isListening,
+                                voiceLevel = voiceLevel,
+                                onAnswerClick = {
                                     recognizedText = ""
-                                    voiceRecognizer.stopListening()
-                                } else if (
-                                    ContextCompat.checkSelfPermission(
-                                        context,
-                                        Manifest.permission.RECORD_AUDIO
-                                    ) == PackageManager.PERMISSION_GRANTED
-                                ) {
-                                    voiceRecognizer.startListening()
-                                } else {
-                                    microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    reviewScope.launch {
+                                        showReviewAnswer = true
+                                        delay(1000)
+                                        showReviewAnswer = false
+                                    }
+                                },
+                                onSpeakClick = {
+                                    recognizedText = ""
+                                    speaker.speak(verse, repeatMode)
+                                },
+                                onRepeatClick = {
+                                    recognizedText = ""
+                                    repeatMode = repeatMode.next()
+                                },
+                                onMicClick = {
+                                    if (voiceRecognizer.isListening) {
+                                        recognizedText = ""
+                                        voiceRecognizer.stopListening()
+                                    } else if (
+                                        ContextCompat.checkSelfPermission(
+                                            context,
+                                            Manifest.permission.RECORD_AUDIO
+                                        ) == PackageManager.PERMISSION_GRANTED
+                                    ) {
+                                        voiceRecognizer.startListening()
+                                    } else {
+                                        microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    }
                                 }
-                            }
-                        )
-                    }
+                            )
+                        }
+                    )
+                }
+                BottomTab.Progress -> {
+                    ProgressScreen(innerPadding = innerPadding)
+                }
+                BottomTab.Settings -> {
+                    SettingsScreen(
+                        innerPadding = innerPadding,
+                        selectedBibleVersion = selectedBibleVersion,
+                        onVersionSelected = { selectedBibleVersion = it },
+                        speechRate = speechRate,
+                        onSpeechRateChange = { speechRate = it }
+                    )
+                }
+            }
+
+            if (showCompletionDialog) {
+                CompletionDialog(
+                    onDismiss = { showCompletionDialog = false }
                 )
             }
-            BottomTab.Progress -> {
-                ProgressScreen(innerPadding = innerPadding)
+            pendingDelete?.let { deleteState ->
+                DeleteVerseDialog(
+                    verseReference = deleteState.verse.reference,
+                    onConfirm = {
+                        when (deleteState.section) {
+                            VerseSection.DueNow -> {
+                                val removeIndex = dueVerses.indexOfFirst { it.id == deleteState.verse.id }
+                                if (removeIndex >= 0) {
+                                    dueVerses.removeAt(removeIndex)
+                                }
+                            }
+                            VerseSection.Upcoming -> {
+                                val removeIndex = upcomingVerses.indexOfFirst { it.id == deleteState.verse.id }
+                                if (removeIndex >= 0) {
+                                    upcomingVerses.removeAt(removeIndex)
+                                }
+                            }
+                        }
+                        pendingDelete = null
+                    },
+                    onDismiss = { pendingDelete = null }
+                )
             }
-            BottomTab.Settings -> {
-                SettingsScreen(
-                    innerPadding = innerPadding,
-                    selectedBibleVersion = selectedBibleVersion,
-                    onVersionSelected = { selectedBibleVersion = it },
-                    speechRate = speechRate,
-                    onSpeechRateChange = { speechRate = it }
+            if (showAddVersePage) {
+                AddVerseScreen(
+                    initialBibleVersion = selectedBibleVersion,
+                    onCancel = { showAddVersePage = false },
+                    onSave = { newVerse, contentType ->
+                        if (contentType == VerseContentType.DueNow) {
+                            dueVerses.add(newVerse)
+                        } else {
+                            upcomingVerses.add(newVerse)
+                        }
+                        showAddVersePage = false
+                    }
                 )
             }
         }
@@ -515,6 +577,7 @@ private fun ReviewScreen(
     upcomingRepeatModes: Map<String, RepeatMode>,
     activeDueLooping: Boolean,
     onMoveVerse: (Verse, VerseSection, VerseSection) -> Unit,
+    onAddVerse: () -> Unit,
     hiddenWordCount: Int,
     isReviewing: Boolean,
     onPlay: () -> Unit,
@@ -548,7 +611,7 @@ private fun ReviewScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            TopBar()
+            TopBar(onAddVerse)
             HeroTitle()
             StatsRow(
                 dueCount = dueCount,
@@ -799,7 +862,7 @@ private fun ProgressScreen(innerPadding: PaddingValues) {
 }
 
 @Composable
-private fun TopBar() {
+private fun TopBar(onAddVerse: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -809,7 +872,8 @@ private fun TopBar() {
         Box(
             modifier = Modifier
                 .size(52.dp)
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f), CircleShape),
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f), CircleShape)
+                .clickable(onClick = onAddVerse),
             contentAlignment = Alignment.Center
         ) {
             Icon(
@@ -820,6 +884,303 @@ private fun TopBar() {
         }
     }
 }
+
+@Composable
+private fun AddVerseScreen(
+    initialBibleVersion: String,
+    onCancel: () -> Unit,
+    onSave: (Verse, VerseContentType) -> Unit
+) {
+    var selectedBibleVersion by remember { mutableStateOf(initialBibleVersion) }
+    var selectedBook by remember { mutableStateOf(bibleBooks.first()) }
+    var selectedChapter by remember { mutableIntStateOf(1) }
+    var selectedVerseStart by remember { mutableIntStateOf(1) }
+    var useVerseEnd by remember { mutableStateOf(false) }
+    var selectedVerseEnd by remember { mutableIntStateOf(1) }
+    var selectedType by remember { mutableStateOf(VerseContentType.DueNow) }
+    var tags by remember { mutableStateOf("") }
+    var difficulty by remember { mutableStateOf(VerseDifficulty.Medium) }
+    var verseText by remember { mutableStateOf("") }
+    val maxVerse = selectedBook.knownVerseCounts[selectedChapter] ?: 50
+    val context = LocalContext.current
+    val addVoiceRecognizer = rememberVoiceRecognizer(
+        onResult = { spokenText -> verseText = mergeRecognizedText(verseText, spokenText) },
+        onError = {},
+        onListeningStateChanged = { _ -> },
+        onLevelChanged = {}
+    )
+    val addVoicePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            addVoiceRecognizer.startListening()
+        }
+    }
+
+    if (selectedVerseStart > maxVerse) selectedVerseStart = maxVerse
+    if (selectedVerseEnd > maxVerse) selectedVerseEnd = maxVerse
+    if (selectedVerseEnd < selectedVerseStart) selectedVerseEnd = selectedVerseStart
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(18.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RoundedTextButton("Cancel", onCancel)
+                RoundedTextButton(
+                    text = "Save",
+                    onClick = {
+                        val reference = buildString {
+                            append(selectedBook.name)
+                            append(" ")
+                            append(selectedChapter)
+                            append(":")
+                            append(selectedVerseStart)
+                            if (useVerseEnd) {
+                                append("-")
+                                append(selectedVerseEnd)
+                            }
+                        }
+                        addVoiceRecognizer.stopListening()
+                        onSave(
+                            Verse(
+                                id = "custom-${System.currentTimeMillis()}",
+                                reference = reference,
+                                translation = selectedBibleVersion,
+                                text = verseText,
+                                prompt = if (tags.isBlank()) difficulty.label else tags
+                            ),
+                            selectedType
+                        )
+                    },
+                    enabled = verseText.isNotBlank()
+                )
+            }
+            Text(
+                text = "Add Verse",
+                style = MaterialTheme.typography.displaySmall,
+                fontWeight = FontWeight.Black,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Text(
+                text = "Reference",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Card(
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    SelectionDropdownField("Bible Version", selectedBibleVersion, bibleVersions) {
+                        selectedBibleVersion = it
+                    }
+                    SelectionDropdownField("Book", selectedBook.name, bibleBooks.map { it.name }) {
+                        selectedBook = bibleBooks.first { book -> book.name == it }
+                        selectedChapter = 1
+                        selectedVerseStart = 1
+                        selectedVerseEnd = 1
+                    }
+                    SelectionDropdownField("Chapter", selectedChapter.toString(), (1..selectedBook.chapterCount).map(Int::toString)) {
+                        selectedChapter = it.toInt()
+                        selectedVerseStart = 1
+                        selectedVerseEnd = 1
+                    }
+                    SelectionDropdownField("Verse Start", selectedVerseStart.toString(), (1..maxVerse).map(Int::toString)) {
+                        selectedVerseStart = it.toInt()
+                        if (selectedVerseEnd < selectedVerseStart) selectedVerseEnd = selectedVerseStart
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Use Verse End",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        Switch(
+                            checked = useVerseEnd,
+                            onCheckedChange = { useVerseEnd = it }
+                        )
+                    }
+                    if (useVerseEnd) {
+                        SelectionDropdownField("Verse End", selectedVerseEnd.toString(), (selectedVerseStart..maxVerse).map(Int::toString)) {
+                            selectedVerseEnd = it.toInt()
+                        }
+                    }
+                }
+            }
+            Text(
+                text = "Content",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Card(
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    SelectionDropdownField("Type", selectedType.label, VerseContentType.entries.map { it.label }) {
+                        selectedType = VerseContentType.entries.first { item -> item.label == it }
+                    }
+                    TextField(
+                        value = tags,
+                        onValueChange = { tags = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Tags (Comma separated)") },
+                        colors = darkFieldColors()
+                    )
+                    SelectionDropdownField("Difficulty", difficulty.label, VerseDifficulty.entries.map { it.label }) {
+                        difficulty = VerseDifficulty.entries.first { item -> item.label == it }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Verse Text",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        SmallIconButton(
+                            icon = Icons.Filled.KeyboardVoice,
+                            label = stringResource(R.string.start_voice_input),
+                            tint = if (addVoiceRecognizer.isListening) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
+                            onClick = {
+                                if (addVoiceRecognizer.isListening) {
+                                    addVoiceRecognizer.stopListening()
+                                } else if (
+                                    ContextCompat.checkSelfPermission(
+                                        context,
+                                        Manifest.permission.RECORD_AUDIO
+                                    ) == PackageManager.PERMISSION_GRANTED
+                                ) {
+                                    addVoiceRecognizer.startListening()
+                                } else {
+                                    addVoicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
+                            }
+                        )
+                    }
+                    TextField(
+                        value = verseText,
+                        onValueChange = { verseText = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(180.dp),
+                        placeholder = { Text("Verse Text") },
+                        colors = darkFieldColors()
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RoundedTextButton(
+    text: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        shape = RoundedCornerShape(999.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f)
+        )
+    ) {
+        Text(text)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SelectionDropdownField(
+    label: String,
+    selectedValue: String,
+    options: List<String>,
+    onSelected: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = !expanded }
+    ) {
+        TextField(
+            value = selectedValue,
+            onValueChange = {},
+            readOnly = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor(),
+            label = { Text(label) },
+            colors = darkFieldColors(),
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) }
+        )
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.background(
+                MaterialTheme.colorScheme.surface,
+                RoundedCornerShape(20.dp)
+            )
+        ) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(option, color = MaterialTheme.colorScheme.onBackground) },
+                    onClick = {
+                        onSelected(option)
+                        expanded = false
+                    }
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun darkFieldColors() = ExposedDropdownMenuDefaults.textFieldColors(
+    focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.18f),
+    unfocusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.18f),
+    focusedTextColor = MaterialTheme.colorScheme.onBackground,
+    unfocusedTextColor = MaterialTheme.colorScheme.onBackground,
+    focusedIndicatorColor = Color.Transparent,
+    unfocusedIndicatorColor = Color.Transparent,
+    focusedTrailingIconColor = MaterialTheme.colorScheme.onBackground,
+    unfocusedTrailingIconColor = MaterialTheme.colorScheme.onBackground,
+    focusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant
+)
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
