@@ -13,6 +13,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -54,6 +55,7 @@ import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.NavigateBefore
 import androidx.compose.material.icons.filled.NavigateNext
 import androidx.compose.material.icons.filled.NotInterested
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RestartAlt
@@ -645,6 +647,9 @@ private fun MemorizeApp() {
                         versePassCounts = versePassCounts,
                         playingRecordedAudioPath = recordedAudioPlayer.playingPath,
                         activeDueLooping = speaker.isLooping,
+                        activeSpokenVerseId = speaker.activeVerseId,
+                        isSpeechPaused = speaker.isPaused,
+                        isSpeechPlaying = speaker.isSpeaking,
                         onMoveVerse = moveVerseBetweenSections,
                         onAddVerse = { showAddVersePage = true },
                         onPlay = {
@@ -761,6 +766,8 @@ private fun MemorizeApp() {
                                 showAnswer = showReviewAnswer,
                                 repeatMode = repeatMode,
                                 isLooping = speaker.isLooping,
+                                isSpeaking = speaker.activeVerseId == verse?.id && speaker.isSpeaking,
+                                isPaused = speaker.activeVerseId == verse?.id && speaker.isPaused,
                                 isListening = voiceRecognizer.isListening,
                                 voiceLevel = voiceLevel,
                                 onAnswerClick = {
@@ -927,6 +934,9 @@ private fun ReviewScreen(
     versePassCounts: Map<String, Int>,
     playingRecordedAudioPath: String?,
     activeDueLooping: Boolean,
+    activeSpokenVerseId: String?,
+    isSpeechPaused: Boolean,
+    isSpeechPlaying: Boolean,
     onMoveVerse: (Verse, VerseSection, VerseSection) -> Unit,
     onAddVerse: () -> Unit,
     hiddenWordCount: Int,
@@ -1026,6 +1036,8 @@ private fun ReviewScreen(
                                 hasRecordedAudio = !dueVerse.recordedAudioPath.isNullOrBlank(),
                                 isPlayingRecordedAudio = dueVerse.recordedAudioPath == playingRecordedAudioPath,
                                 onSpeak = { onSpeak(dueVerse) },
+                                isSpeaking = activeSpokenVerseId == dueVerse.id && isSpeechPlaying,
+                                isPaused = activeSpokenVerseId == dueVerse.id && isSpeechPaused,
                                 onRepeatToggle = { onRepeatToggle(dueVerse) },
                                 onNextVerse = { onDeleteDueVerse(dueVerse) },
                                 repeatMode = dueRepeatModes[dueVerse.id] ?: RepeatMode.Off,
@@ -1080,6 +1092,8 @@ private fun ReviewScreen(
                                 hasRecordedAudio = !upcomingVerse.recordedAudioPath.isNullOrBlank(),
                                 isPlayingRecordedAudio = upcomingVerse.recordedAudioPath == playingRecordedAudioPath,
                                 onSpeak = { onUpcomingSpeak(upcomingVerse) },
+                                isSpeaking = activeSpokenVerseId == upcomingVerse.id && isSpeechPlaying,
+                                isPaused = activeSpokenVerseId == upcomingVerse.id && isSpeechPaused,
                                 onRepeatToggle = { onUpcomingRepeatToggle(upcomingVerse) },
                                 onNextVerse = { onDeleteUpcomingVerse(upcomingVerse) },
                                 repeatMode = upcomingRepeatModes[upcomingVerse.id] ?: RepeatMode.Off,
@@ -2668,6 +2682,8 @@ private fun DueVerseCard(
     hasRecordedAudio: Boolean,
     isPlayingRecordedAudio: Boolean,
     onSpeak: () -> Unit,
+    isSpeaking: Boolean,
+    isPaused: Boolean,
     onRepeatToggle: () -> Unit,
     onNextVerse: () -> Unit,
     repeatMode: RepeatMode,
@@ -2721,6 +2737,8 @@ private fun DueVerseCard(
                     hasRecordedAudio = hasRecordedAudio,
                     isPlayingRecordedAudio = isPlayingRecordedAudio,
                     onSpeak = onSpeak,
+                    isSpeaking = isSpeaking,
+                    isPaused = isPaused,
                     onRepeat = onRepeatToggle,
                     onNextVerse = onNextVerse,
                     repeatMode = repeatMode,
@@ -2750,6 +2768,8 @@ private fun ReviewPracticeCard(
     showAnswer: Boolean,
     repeatMode: RepeatMode,
     isLooping: Boolean,
+    isSpeaking: Boolean,
+    isPaused: Boolean,
     isListening: Boolean,
     voiceLevel: Float,
     onAnswerClick: () -> Unit,
@@ -2784,6 +2804,8 @@ private fun ReviewPracticeCard(
                 ReviewActionRow(
                     repeatMode = repeatMode,
                     isLooping = isLooping,
+                    isSpeaking = isSpeaking,
+                    isPaused = isPaused,
                     isListening = isListening,
                     onAnswerClick = onAnswerClick,
                     onSpeakClick = onSpeakClick,
@@ -2946,6 +2968,8 @@ private fun VoiceLevelIndicator(level: Float, active: Boolean) {
 private fun ReviewActionRow(
     repeatMode: RepeatMode,
     isLooping: Boolean,
+    isSpeaking: Boolean,
+    isPaused: Boolean,
     isListening: Boolean,
     onAnswerClick: () -> Unit,
     onSpeakClick: () -> Unit,
@@ -2961,7 +2985,11 @@ private fun ReviewActionRow(
             onClick = onAnswerClick
         )
         ReviewIconButton(
-            icon = Icons.Filled.VolumeUp,
+            icon = when {
+                isPaused -> Icons.Filled.PlayArrow
+                isSpeaking -> Icons.Filled.Pause
+                else -> Icons.Filled.VolumeUp
+            },
             label = stringResource(R.string.speak_verse),
             tint = Color.White,
             backgroundColor = Color.Transparent,
@@ -3082,6 +3110,8 @@ private fun ActionRow(
     hasRecordedAudio: Boolean,
     isPlayingRecordedAudio: Boolean,
     onSpeak: () -> Unit,
+    isSpeaking: Boolean,
+    isPaused: Boolean,
     onRepeat: () -> Unit,
     onNextVerse: () -> Unit,
     repeatMode: RepeatMode,
@@ -3108,7 +3138,11 @@ private fun ActionRow(
             onClick = onRecordedSpeak
         )
         SmallIconButton(
-            icon = Icons.Filled.VolumeUp,
+            icon = when {
+                isPaused -> Icons.Filled.PlayArrow
+                isSpeaking -> Icons.Filled.Pause
+                else -> Icons.Filled.VolumeUp
+            },
             label = stringResource(R.string.speak_verse),
             tint = MaterialTheme.colorScheme.onBackground,
             onClick = onSpeak
@@ -4024,7 +4058,10 @@ private fun BottomNavBar(selectedTab: BottomTab, onSelect: (BottomTab) -> Unit) 
 private data class VerseSpeakerController(
     val speak: (Verse, RepeatMode) -> Unit,
     val stop: () -> Unit,
-    val isLooping: Boolean
+    val isLooping: Boolean,
+    val activeVerseId: String?,
+    val isPaused: Boolean,
+    val isSpeaking: Boolean
 )
 
 @Composable
@@ -4033,8 +4070,66 @@ private fun rememberVerseSpeaker(speechRate: Float): VerseSpeakerController {
     val scope = rememberCoroutineScope()
     var textToSpeech by remember { mutableStateOf<TextToSpeech?>(null) }
     var isReady by remember { mutableStateOf(false) }
-    var repeatJob by remember { mutableStateOf<Job?>(null) }
     var isLooping by remember { mutableStateOf(false) }
+    var currentVerseId by remember { mutableStateOf<String?>(null) }
+    var currentRepeatMode by remember { mutableStateOf(RepeatMode.Off) }
+    var currentSegments by remember { mutableStateOf<List<String>>(emptyList()) }
+    var currentSegmentIndex by remember { mutableIntStateOf(0) }
+    var remainingFiniteLoops by remember { mutableIntStateOf(0) }
+    var paused by remember { mutableStateOf(false) }
+    var activeSessionId by remember { mutableIntStateOf(0) }
+
+    fun clearPlaybackState(stopEngine: Boolean) {
+        activeSessionId += 1
+        currentVerseId = null
+        currentRepeatMode = RepeatMode.Off
+        currentSegments = emptyList()
+        currentSegmentIndex = 0
+        remainingFiniteLoops = 0
+        paused = false
+        isLooping = false
+        if (stopEngine) {
+            textToSpeech?.stop()
+        }
+    }
+
+    fun speakNextSegment(sessionId: Int) {
+        val tts = textToSpeech ?: return
+        if (!isReady || paused || sessionId != activeSessionId) return
+
+        if (currentSegments.isEmpty()) {
+            clearPlaybackState(stopEngine = false)
+            return
+        }
+
+        if (currentSegmentIndex >= currentSegments.size) {
+            when (currentRepeatMode) {
+                RepeatMode.Off -> {
+                    clearPlaybackState(stopEngine = false)
+                    return
+                }
+                RepeatMode.Once,
+                RepeatMode.Twice -> {
+                    if (remainingFiniteLoops <= 0) {
+                        clearPlaybackState(stopEngine = false)
+                        return
+                    }
+                    remainingFiniteLoops -= 1
+                    currentSegmentIndex = 0
+                }
+                RepeatMode.Infinite -> {
+                    isLooping = true
+                    currentSegmentIndex = 0
+                }
+            }
+        }
+
+        val segment = currentSegments.getOrNull(currentSegmentIndex) ?: run {
+            clearPlaybackState(stopEngine = false)
+            return
+        }
+        tts.speak(segment, TextToSpeech.QUEUE_FLUSH, null, "tts-$sessionId-$currentSegmentIndex")
+    }
 
     DisposableEffect(context) {
         var engine: TextToSpeech? = null
@@ -4044,15 +4139,40 @@ private fun rememberVerseSpeaker(speechRate: Float): VerseSpeakerController {
                 isReady = result != TextToSpeech.LANG_MISSING_DATA && result != TextToSpeech.LANG_NOT_SUPPORTED
             }
         }
+        engine?.setOnUtteranceProgressListener(
+            object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) = Unit
+
+                override fun onDone(utteranceId: String?) {
+                    scope.launch {
+                        if (paused) return@launch
+                        currentSegmentIndex += 1
+                        speakNextSegment(activeSessionId)
+                    }
+                }
+
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) {
+                    scope.launch {
+                        clearPlaybackState(stopEngine = false)
+                    }
+                }
+
+                override fun onError(utteranceId: String?, errorCode: Int) {
+                    scope.launch {
+                        clearPlaybackState(stopEngine = false)
+                    }
+                }
+            }
+        )
         textToSpeech = engine
 
         onDispose {
-            repeatJob?.cancel()
+            clearPlaybackState(stopEngine = false)
             engine?.stop()
             engine?.shutdown()
             textToSpeech = null
             isReady = false
-            isLooping = false
         }
     }
 
@@ -4063,11 +4183,36 @@ private fun rememberVerseSpeaker(speechRate: Float): VerseSpeakerController {
         onDispose { }
     }
 
-    return remember(textToSpeech, isReady, speechRate, repeatJob, isLooping) {
+    return remember(
+        textToSpeech,
+        isReady,
+        speechRate,
+        isLooping,
+        currentVerseId,
+        currentRepeatMode,
+        currentSegments,
+        currentSegmentIndex,
+        remainingFiniteLoops,
+        paused,
+        activeSessionId
+    ) {
         VerseSpeakerController(
-            speak = { verse: Verse, repeatMode: RepeatMode ->
+            speak = speak@{ verse: Verse, repeatMode: RepeatMode ->
                 val tts = textToSpeech
                 if (isReady && tts != null) {
+                    if (currentVerseId == verse.id) {
+                        if (paused) {
+                            paused = false
+                            speakNextSegment(activeSessionId)
+                            return@speak
+                        }
+                        if (currentSegments.isNotEmpty()) {
+                            paused = true
+                            tts.stop()
+                            return@speak
+                        }
+                    }
+
                     val languageResult = tts.setLanguage(bibleVersionToLocale(verse.translation))
                     if (
                         languageResult == TextToSpeech.LANG_MISSING_DATA ||
@@ -4075,56 +4220,42 @@ private fun rememberVerseSpeaker(speechRate: Float): VerseSpeakerController {
                     ) {
                         tts.setLanguage(Locale.forLanguageTag("en-US"))
                     }
-                    val utterance = "${localizedReference(verse.reference, verse.translation)}. ${verse.text}"
+                    val utterance = "${localizedReference(verse.reference, verse.translation)}. ${verse.text}".trim()
+                    val segments = utterance.chunkForSpeech()
+                    if (segments.isEmpty()) return@speak
 
-                    repeatJob?.cancel()
-                    repeatJob = null
-                    isLooping = false
+                    clearPlaybackState(stopEngine = false)
                     tts.stop()
-
-                    when (repeatMode) {
-                        RepeatMode.Off -> {
-                            tts.speak(utterance, TextToSpeech.QUEUE_FLUSH, null, verse.reference)
-                        }
-                        RepeatMode.Once,
-                        RepeatMode.Twice -> {
-                            val totalTimes = if (repeatMode == RepeatMode.Once) 2 else 3
-                            repeat(totalTimes) { index ->
-                                tts.speak(
-                                    utterance,
-                                    if (index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD,
-                                    null,
-                                    "${verse.reference}-$index"
-                                )
-                            }
-                        }
-                        RepeatMode.Infinite -> {
-                            isLooping = true
-                            repeatJob = scope.launch {
-                                while (isActive) {
-                                    tts.speak(utterance, TextToSpeech.QUEUE_FLUSH, null, verse.reference)
-                                    delay(estimateSpeechDurationMillis(utterance, speechRate))
-                                }
-                            }
-                        }
+                    currentVerseId = verse.id
+                    currentRepeatMode = repeatMode
+                    currentSegments = segments
+                    currentSegmentIndex = 0
+                    remainingFiniteLoops = when (repeatMode) {
+                        RepeatMode.Off -> 0
+                        RepeatMode.Once -> 1
+                        RepeatMode.Twice -> 2
+                        RepeatMode.Infinite -> Int.MAX_VALUE
                     }
+                    paused = false
+                    isLooping = repeatMode == RepeatMode.Infinite
+                    speakNextSegment(activeSessionId)
                 }
             },
             stop = {
-                repeatJob?.cancel()
-                repeatJob = null
-                isLooping = false
-                textToSpeech?.stop()
+                clearPlaybackState(stopEngine = true)
             },
-            isLooping = isLooping
+            isLooping = isLooping,
+            activeVerseId = currentVerseId,
+            isPaused = paused,
+            isSpeaking = currentSegments.isNotEmpty() && !paused
         )
     }
 }
 
-private fun estimateSpeechDurationMillis(text: String, speechRate: Float): Long {
-    val words = text.split(" ").size.coerceAtLeast(1)
-    val baseDuration = words * 420L
-    return (baseDuration / speechRate.coerceAtLeast(0.1f)).toLong().coerceAtLeast(1200L)
+private fun String.chunkForSpeech(chunkSize: Int = 4): List<String> {
+    val tokens = trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+    if (tokens.isEmpty()) return emptyList()
+    return tokens.chunked(chunkSize).map { it.joinToString(" ") }
 }
 
 private fun Float.snapToTenth(): Float = (this * 10f).roundToInt() / 10f
