@@ -4249,7 +4249,7 @@ private fun rememberVerseSpeaker(speechRate: Float): VerseSpeakerController {
                     ) {
                         tts.setLanguage(Locale.forLanguageTag("en-US"))
                     }
-                    val utterance = "${localizedReference(verse.reference, verse.translation)}. ${verse.text}".trim()
+                    val utterance = verse.text.trim()
                     val segments = utterance.chunkForSpeech()
                     if (segments.isEmpty()) return@speak
 
