@@ -102,6 +102,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
@@ -1343,15 +1346,21 @@ private fun TopBar(onAddVerse: () -> Unit) {
     ) {
         Box(
             modifier = Modifier
-                .size(52.dp)
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f), CircleShape)
+                .size(56.dp)
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.22f), CircleShape)
+                .border(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f),
+                    shape = CircleShape
+                )
                 .clickable(onClick = onAddVerse),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = Icons.Filled.Add,
                 contentDescription = stringResource(R.string.add_verse),
-                tint = MaterialTheme.colorScheme.onBackground
+                tint = Color.White,
+                modifier = Modifier.size(28.dp)
             )
         }
     }
@@ -1724,7 +1733,14 @@ private fun AddVerseScreen(
                         textStyle = MaterialTheme.typography.bodyLarge.copy(
                             fontFamily = bibleVersionFontFamily(selectedBibleVersion)
                         ),
-                        colors = darkFieldColors()
+                        colors = darkFieldColors(),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(
+                            onDone = {
+                                focusManager.clearFocus()
+                                keyboardController?.hide()
+                            }
+                        )
                     )
                 }
             }
@@ -2033,11 +2049,18 @@ private fun EditVerseScreen(
                         },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(220.dp),
+                        .height(220.dp),
                         textStyle = MaterialTheme.typography.bodyLarge.copy(
                             fontFamily = bibleVersionFontFamily(selectedBibleVersion)
                         ),
-                        colors = darkFieldColors()
+                        colors = darkFieldColors(),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(
+                            onDone = {
+                                focusManager.clearFocus()
+                                keyboardController?.hide()
+                            }
+                        )
                     )
                 }
             }
