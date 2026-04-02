@@ -648,7 +648,9 @@ private fun MemorizeApp() {
                         dueRepeatModes = dueRepeatModes,
                         upcomingRepeatModes = upcomingRepeatModes,
                         versePassCounts = versePassCounts,
-                        playingRecordedAudioPath = recordedAudioPlayer.playingPath,
+                        playingRecordedAudioPath = recordedAudioPlayer.activePath,
+                        isRecordedAudioPaused = recordedAudioPlayer.isPaused,
+                        isRecordedAudioPlaying = recordedAudioPlayer.isPlaying,
                         activeDueLooping = speaker.isLooping,
                         activeSpokenVerseId = speaker.activeVerseId,
                         isSpeechPaused = speaker.isPaused,
@@ -936,6 +938,8 @@ private fun ReviewScreen(
     upcomingRepeatModes: Map<String, RepeatMode>,
     versePassCounts: Map<String, Int>,
     playingRecordedAudioPath: String?,
+    isRecordedAudioPaused: Boolean,
+    isRecordedAudioPlaying: Boolean,
     activeDueLooping: Boolean,
     activeSpokenVerseId: String?,
     isSpeechPaused: Boolean,
@@ -1037,7 +1041,8 @@ private fun ReviewScreen(
                                 onEdit = { onEditDueVerse(dueVerse) },
                                 onRecordedSpeak = { onRecordedSpeak(dueVerse) },
                                 hasRecordedAudio = !dueVerse.recordedAudioPath.isNullOrBlank(),
-                                isPlayingRecordedAudio = dueVerse.recordedAudioPath == playingRecordedAudioPath,
+                                isPlayingRecordedAudio = dueVerse.recordedAudioPath == playingRecordedAudioPath && isRecordedAudioPlaying,
+                                isPausedRecordedAudio = dueVerse.recordedAudioPath == playingRecordedAudioPath && isRecordedAudioPaused,
                                 onSpeak = { onSpeak(dueVerse) },
                                 isSpeaking = activeSpokenVerseId == dueVerse.id && isSpeechPlaying,
                                 isPaused = activeSpokenVerseId == dueVerse.id && isSpeechPaused,
@@ -1093,7 +1098,8 @@ private fun ReviewScreen(
                                 onEdit = { onEditUpcomingVerse(upcomingVerse) },
                                 onRecordedSpeak = { onUpcomingRecordedSpeak(upcomingVerse) },
                                 hasRecordedAudio = !upcomingVerse.recordedAudioPath.isNullOrBlank(),
-                                isPlayingRecordedAudio = upcomingVerse.recordedAudioPath == playingRecordedAudioPath,
+                                isPlayingRecordedAudio = upcomingVerse.recordedAudioPath == playingRecordedAudioPath && isRecordedAudioPlaying,
+                                isPausedRecordedAudio = upcomingVerse.recordedAudioPath == playingRecordedAudioPath && isRecordedAudioPaused,
                                 onSpeak = { onUpcomingSpeak(upcomingVerse) },
                                 isSpeaking = activeSpokenVerseId == upcomingVerse.id && isSpeechPlaying,
                                 isPaused = activeSpokenVerseId == upcomingVerse.id && isSpeechPaused,
@@ -2704,6 +2710,7 @@ private fun DueVerseCard(
     onRecordedSpeak: () -> Unit,
     hasRecordedAudio: Boolean,
     isPlayingRecordedAudio: Boolean,
+    isPausedRecordedAudio: Boolean,
     onSpeak: () -> Unit,
     isSpeaking: Boolean,
     isPaused: Boolean,
@@ -2759,6 +2766,7 @@ private fun DueVerseCard(
                     onRecordedSpeak = onRecordedSpeak,
                     hasRecordedAudio = hasRecordedAudio,
                     isPlayingRecordedAudio = isPlayingRecordedAudio,
+                    isPausedRecordedAudio = isPausedRecordedAudio,
                     onSpeak = onSpeak,
                     isSpeaking = isSpeaking,
                     isPaused = isPaused,
@@ -3132,6 +3140,7 @@ private fun ActionRow(
     onRecordedSpeak: () -> Unit,
     hasRecordedAudio: Boolean,
     isPlayingRecordedAudio: Boolean,
+    isPausedRecordedAudio: Boolean,
     onSpeak: () -> Unit,
     isSpeaking: Boolean,
     isPaused: Boolean,
@@ -3148,11 +3157,15 @@ private fun ActionRow(
             onClick = onEdit
         )
         SmallIconButton(
-            icon = Icons.Filled.GraphicEq,
+            icon = when {
+                isPausedRecordedAudio -> Icons.Filled.PlayArrow
+                isPlayingRecordedAudio -> Icons.Filled.Pause
+                else -> Icons.Filled.GraphicEq
+            },
             label = "Play recorded verse",
             tint = if (!hasRecordedAudio) {
                 MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
-            } else if (isPlayingRecordedAudio) {
+            } else if (isPlayingRecordedAudio || isPausedRecordedAudio) {
                 MaterialTheme.colorScheme.primary
             } else {
                 MaterialTheme.colorScheme.onBackground
@@ -3656,7 +3669,9 @@ private data class VerseAudioRecorderController(
 private data class VerseAudioPlayerController(
     val play: (String, RepeatMode) -> Unit,
     val stop: () -> Unit,
-    val playingPath: String?
+    val activePath: String?,
+    val isPaused: Boolean,
+    val isPlaying: Boolean
 )
 
 private data class VoiceRecognizerController(
@@ -3894,111 +3909,102 @@ private fun rememberVerseAudioRecorder(): VerseAudioRecorderController {
 
 @Composable
 private fun rememberVerseAudioPlayer(): VerseAudioPlayerController {
-    val scope = rememberCoroutineScope()
     var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
-    var playingPath by remember { mutableStateOf<String?>(null) }
-    var repeatJob by remember { mutableStateOf<Job?>(null) }
+    var activePath by remember { mutableStateOf<String?>(null) }
+    var isPaused by remember { mutableStateOf(false) }
+    var isPlaying by remember { mutableStateOf(false) }
 
-    DisposableEffect(Unit) {
-        onDispose {
-            repeatJob?.cancel()
+    fun clearPlaybackState(releasePlayer: Boolean) {
+        if (releasePlayer) {
             runCatching { mediaPlayer?.stop() }
             runCatching { mediaPlayer?.release() }
             mediaPlayer = null
-            playingPath = null
+        }
+        activePath = null
+        isPaused = false
+        isPlaying = false
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            clearPlaybackState(releasePlayer = true)
         }
     }
 
-    return remember(mediaPlayer, playingPath, repeatJob) {
+    return remember(mediaPlayer, activePath, isPaused, isPlaying) {
         VerseAudioPlayerController(
-            play = { path, repeatMode ->
-                if (path == playingPath) {
-                    repeatJob?.cancel()
-                    runCatching { mediaPlayer?.stop() }
-                    runCatching { mediaPlayer?.release() }
-                    mediaPlayer = null
-                    playingPath = null
-                } else {
-                    repeatJob?.cancel()
-                    runCatching { mediaPlayer?.stop() }
-                    runCatching { mediaPlayer?.release() }
-                    mediaPlayer = null
-
-                    when (repeatMode) {
-                        RepeatMode.Off,
-                        RepeatMode.Once,
-                        RepeatMode.Twice -> {
-                            val totalTimes = when (repeatMode) {
-                                RepeatMode.Off -> 1
-                                RepeatMode.Once -> 2
-                                RepeatMode.Twice -> 3
-                                RepeatMode.Infinite -> 1
-                            }
-                            var remaining = totalTimes
-                            val player = MediaPlayer()
-                            runCatching {
-                                player.setDataSource(path)
-                                player.setOnCompletionListener { completedPlayer ->
-                                    remaining -= 1
-                                    if (remaining > 0) {
-                                        completedPlayer.seekTo(0)
-                                        completedPlayer.start()
-                                    } else {
-                                        runCatching { completedPlayer.release() }
-                                        mediaPlayer = null
-                                        playingPath = null
-                                    }
-                                }
-                                player.prepare()
-                                player.start()
-                                mediaPlayer = player
-                                playingPath = path
-                            }.getOrElse {
-                                runCatching { player.release() }
-                                mediaPlayer = null
-                                playingPath = null
-                            }
+            play = play@{ path, repeatMode ->
+                if (path == activePath) {
+                    val player = mediaPlayer
+                    if (player != null) {
+                        if (isPlaying) {
+                            runCatching { player.pause() }
+                            isPlaying = false
+                            isPaused = true
+                        } else if (isPaused) {
+                            runCatching { player.start() }
+                            isPlaying = true
+                            isPaused = false
                         }
-                        RepeatMode.Infinite -> {
-                            playingPath = path
-                            repeatJob = scope.launch {
-                                while (isActive) {
-                                    val player = MediaPlayer()
-                                    val prepared = runCatching {
-                                        player.setDataSource(path)
-                                        player.prepare()
-                                        player.start()
-                                        mediaPlayer = player
-                                        true
-                                    }.getOrElse {
-                                        runCatching { player.release() }
-                                        mediaPlayer = null
-                                        false
-                                    }
-                                    if (!prepared) {
-                                        playingPath = null
-                                        break
-                                    }
-                                    val duration = player.duration.takeIf { it > 0 }?.toLong() ?: 1500L
-                                    delay(duration)
-                                    runCatching { player.stop() }
-                                    runCatching { player.release() }
-                                    mediaPlayer = null
+                    }
+                    return@play
+                }
+
+                clearPlaybackState(releasePlayer = true)
+
+                when (repeatMode) {
+                    RepeatMode.Off,
+                    RepeatMode.Once,
+                    RepeatMode.Twice,
+                    RepeatMode.Infinite -> {
+                        val totalTimes = when (repeatMode) {
+                            RepeatMode.Off -> 1
+                            RepeatMode.Once -> 2
+                            RepeatMode.Twice -> 3
+                            RepeatMode.Infinite -> Int.MAX_VALUE
+                        }
+                        var remaining = totalTimes
+                        val player = MediaPlayer()
+                        runCatching {
+                            player.setDataSource(path)
+                            player.isLooping = repeatMode == RepeatMode.Infinite
+                            player.setOnCompletionListener { completedPlayer ->
+                                if (repeatMode == RepeatMode.Infinite) {
+                                    return@setOnCompletionListener
                                 }
-                                playingPath = null
+                                remaining -= 1
+                                if (remaining > 0) {
+                                    completedPlayer.seekTo(0)
+                                    completedPlayer.start()
+                                    isPlaying = true
+                                    isPaused = false
+                                } else {
+                                    runCatching { completedPlayer.release() }
+                                    mediaPlayer = null
+                                    activePath = null
+                                    isPlaying = false
+                                    isPaused = false
+                                }
                             }
+                            player.prepare()
+                            player.start()
+                            mediaPlayer = player
+                            activePath = path
+                            isPlaying = true
+                            isPaused = false
+                        }.getOrElse {
+                            runCatching { player.release() }
+                            clearPlaybackState(releasePlayer = false)
                         }
                     }
                 }
             },
             stop = {
-                repeatJob?.cancel()
-                runCatching { mediaPlayer?.stop() }
-                runCatching { mediaPlayer?.release() }
-                mediaPlayer = null
-                playingPath = null
+                clearPlaybackState(releasePlayer = true)
             },
-            playingPath = playingPath
+            activePath = activePath,
+            isPaused = isPaused,
+            isPlaying = isPlaying
         )
     }
 }
